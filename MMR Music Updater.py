@@ -70,6 +70,10 @@ def remove_diacritics(text: str):
 
   return without_diacritics
 
+def parse_hex_id(value: str) -> int:
+    value = value.lower().strip()
+    return int(value, 16) if value.startswith("0x") else int(value, 16)
+
 class StandaloneSequence:
   def __init__(self, filename, base_folder):
     self.basefolder : str = base_folder
@@ -127,11 +131,10 @@ class StandaloneSequence:
 
 class MusicArchive:
   def __init__(self, base_folder):
-    self.seq_file   : str = None
-    self.seq_ext    : str = None
+    self.sequences  : list[tuple[str, str]] = [] # (name, extension)
     self.categories : str = None
-    self.bankfile   : str = None
-    self.bankmeta   : str = None
+    self.banks      : dict[str, tuple[str, str]] = {} # { '28': ('28.zbank', '28.bankmeta')}
+    self.formmasks  : dict[str, str] = {} # { '28': '28.formmask' }
 
     # Store zsounds in a dictionary
     self.zsounds : dict[str, str] = {}
@@ -160,25 +163,31 @@ class MusicArchive:
 
     for f in os.listdir(self.tempfolder):
       if f.endswith(SEQ_EXTS):
-        self.seq_file, self.seq_ext = os.path.splitext(f)
-
-        os.rename(f'{self.tempfolder}/{f}', f'{self.tempfolder}/{filename}.seq')
+        base, ext = os.path.splitext(f)
+        self.sequences.append((base, ext))
         continue
 
       if f.endswith('.zbank'):
-        os.rename(f'{self.tempfolder}/{f}', f'{self.tempfolder}/28.zbank')
+        base = os.path.splitext(f)[0]
+        zbank_path = f
+        bankmeta_path = f'{base}.bankmeta'
 
-        self.bankfile = '28.zbank'
+        if os.path.exists(os.path.join(self.tempfolder, bankmeta_path)):
+          self.banks[base] = (zbank_path, bankmeta_path)
+        else:
+          raise FileNotFoundError(f'Missing bankmeta for {zbank_path}!')
         continue
 
       if f.endswith('.bankmeta'):
-        os.rename(f'{self.tempfolder}/{f}', f'{self.tempfolder}/28.bankmeta')
-
-        self.bankmeta = '28.bankmeta'
         continue
 
       if f == 'categories.txt':
         self.categories = f
+        continue
+
+      if f.endswith('.formmask'):
+        base = os.path.splitext(f)[0]
+        self.formmasks[base] = f
         continue
 
       if f.endswith('.zsound'):
@@ -197,12 +206,10 @@ class MusicArchive:
         self.zsounds[name] = temp_addr
         continue
 
-    if not self.seq_file:
+    if not self.sequences:
       raise FileNotFoundError('No sequence file!')
     if not self.categories:
       raise FileNotFoundError('No categories file!')
-    if self.bankfile and not self.bankmeta or self.bankmeta and not self.bankfile:
-      raise FileNotFoundError('File contains one bank file! Two are required!')
 
   def pack(self, filename, rel_path) -> None:
     output_path = os.path.join(self.convfolder, os.path.dirname(rel_path))
@@ -281,10 +288,7 @@ def convert_archive(file, base_folder, rel_path) -> None:
     return
 
   cosmetic_name = filename.replace('songforce', '').replace('songtest', '').strip(" _-")
-  meta_bank = archive.seq_file
-
-  if int(meta_bank, 16) >= 0x28 or archive.bankfile and archive.bankmeta:
-    meta_bank = '-'
+  original_temp = archive.tempfolder
 
   with open(f'{archive.tempfolder}/{archive.categories}', 'r') as text:
     categories = ''.join(text.readlines(0))
@@ -305,24 +309,63 @@ def convert_archive(file, base_folder, rel_path) -> None:
 
     categories = ','.join(categories)
 
-  os.remove(f'{archive.tempfolder}/{archive.categories}')
+  for base_name, ext in archive.sequences:
+    song_folder = f'{original_temp}_{base_name}'
+    os.makedirs(song_folder, exist_ok=True)
 
-  for key, value in archive.zsounds.items():
-    garbage = f'ZSOUND:{key}.zsound:{value}'
-    zsounds.append(garbage)
+    meta_bank = base_name
 
-  with open(f'{archive.tempfolder}/{filename}.meta', 'a') as meta:
-    meta.write(cosmetic_name)
-    meta.write('\n' + meta_bank)
-    meta.write('\n' + song_type)
-    meta.write('\n' + categories)
-    if zsounds:
-      for garbage in zsounds:
-        meta.write('\n' + garbage)
-    else:
-      pass
+    # Copy sequence files
+    original_seq = os.path.join(original_temp, f'{base_name}{ext}')
+    new_seq_path = os.path.join(song_folder, f'{base_name}.seq')
+    shutil.copy2(original_seq, new_seq_path)
 
-  archive.pack(filename, rel_path)
+    if base_name in archive.banks:
+      zbank, bankmeta = archive.banks[base_name]
+      shutil.copy2(os.path.join(original_temp, zbank), song_folder)
+      shutil.copy2(os.path.join(original_temp, bankmeta), song_folder)
+
+      meta_bank = '-'
+
+      for item in os.listdir(original_temp):
+        if item.endswith('.zsound'):
+          shutil.copy2(os.path.join(original_temp, item), song_folder)
+
+      for key, value in archive.zsounds.items():
+        command = f'ZSOUND:{key}.zsound:{value}'
+        zsounds.append(command)
+
+    if base_name in archive.formmasks:
+      formmask = archive.formmasks[base_name]
+      shutil.copy2(os.path.join(original_temp, formmask), song_folder)
+
+    # Copy extra non-processed files
+    for item in os.listdir(original_temp):
+      if item.endswith(('.seq', '.zseq', '.aseq', '.zbank', '.bankmeta', '.formmask')) or item == 'categories.txt':
+        continue
+
+      full_item_path = os.path.join(original_temp, item)
+      if os.path.isfile(full_item_path):
+        shutil.copy2(full_item_path, song_folder)
+
+    with open(os.path.join(song_folder, f'{base_name}.meta'), 'a') as meta:
+      meta.write(cosmetic_name)
+      meta.write('\n' + meta_bank)
+      meta.write('\n' + song_type)
+      meta.write('\n' + categories)
+      if zsounds:
+        for garbage in zsounds:
+          meta.write('\n' + garbage)
+
+    temp_archive = MusicArchive(base_folder)
+    temp_archive.tempfolder = song_folder
+    temp_archive.pack(f'{filename}_{base_name}', rel_path)
+
+    if os.path.isdir(song_folder):
+      shutil.rmtree(song_folder)
+
+  if os.path.isdir(original_temp):
+    shutil.rmtree(original_temp)
 
 if __name__ == '__main__':
   def process_file(full_path, base_folder, rel_path):
