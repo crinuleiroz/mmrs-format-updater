@@ -238,7 +238,7 @@ def convert_standalone(file, base_folder, rel_path) -> None:
 
   standalone.copy(filepath)
 
-  cosmetic_name = standalone.filename
+  cosmetic_name = standalone.filename.replace('songforce', '').replace('songtest', '').strip(" _-")
   meta_bank = standalone.instrument_set
 
   ff_or_bgm = [category.upper() in FANFARE_CATEGORIES for category in standalone.categories]
@@ -280,7 +280,7 @@ def convert_archive(file, base_folder, rel_path) -> None:
   except:
     return
 
-  cosmetic_name = filename
+  cosmetic_name = filename.replace('songforce', '').replace('songtest', '').strip(" _-")
   meta_bank = archive.seq_file
 
   if int(meta_bank, 16) >= 0x28 or archive.bankfile and archive.bankmeta:
