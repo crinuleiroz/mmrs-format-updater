@@ -341,7 +341,7 @@ def convert_archive(file, base_folder, rel_path) -> None:
 
     # Copy extra non-processed files
     for item in os.listdir(original_temp):
-      if item.endswith(('.seq', '.zseq', '.aseq', '.zbank', '.bankmeta', '.formmask')) or item == 'categories.txt':
+      if item.endswith(('.seq', '.zseq', '.aseq', '.zbank', '.bankmeta', '.zsound', '.formmask')) or item == 'categories.txt':
         continue
 
       full_item_path = os.path.join(original_temp, item)
