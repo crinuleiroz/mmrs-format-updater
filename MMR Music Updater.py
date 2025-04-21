@@ -234,7 +234,7 @@ class MusicArchive:
     if not self.sequences:
       raise FileNotFoundError(f'ERROR: Error processing mmrs file: {filename}! Missing sequence file!')
     if not self.categories:
-      raise FileNotFoundError(f'ERROR: Error processing mmrs file: {filename}! Missing categories file')
+      raise FileNotFoundError(f'ERROR: Error processing mmrs file: {filename}! Missing categories file!')
 
   def pack(self, filename, rel_path) -> None:
     '''Packs the temp folder into a new mmrs file'''
