@@ -1,4 +1,5 @@
 import os, sys, time
+import tempfile
 import shutil
 import zipfile
 import unicodedata
@@ -77,7 +78,7 @@ def parse_hex_id(value: str) -> int:
 class StandaloneSequence:
   def __init__(self, filename, base_folder):
     self.basefolder : str = base_folder
-    self.tempfolder : str = os.path.join(self.basefolder, 'temp')
+    self.tempfolder : str = tempfile.mkdtemp(prefix='zseq_convert_')
     self.convfolder : str = os.path.join(self.basefolder, 'converted')
 
     self.filename = None
@@ -112,8 +113,6 @@ class StandaloneSequence:
     if os.path.isdir(self.filename + '.mmrs'):
       os.remove(self.filename + '.mmrs')
 
-    os.mkdir(self.tempfolder)
-
     with open(filepath, 'rb') as src:
       with open(f'{self.tempfolder}/{self.filename}.seq', 'wb') as dst:
         dst.write(src.read())
@@ -125,9 +124,6 @@ class StandaloneSequence:
     archive_path = os.path.join(output_path, filename)
     shutil.make_archive(archive_path, 'zip', self.tempfolder)
     os.rename(f'{archive_path}.zip', f'{archive_path}.mmrs')
-
-    if os.path.isdir(self.tempfolder):
-      shutil.rmtree(self.tempfolder)
 
 class MusicArchive:
   def __init__(self, base_folder):
@@ -141,7 +137,7 @@ class MusicArchive:
 
     # Get the paths
     self.basefolder : str = base_folder
-    self.tempfolder : str = os.path.join(self.basefolder, 'temp')
+    self.tempfolder : str = tempfile.mkdtemp(prefix='mmrs_convert_')
     self.convfolder : str = os.path.join(self.basefolder, 'converted')
 
   def unpack(self, filename : str, filepath : str) -> None:
@@ -219,9 +215,6 @@ class MusicArchive:
     shutil.make_archive(archive_path, 'zip', self.tempfolder)
     os.rename(f'{archive_path}.zip', f'{archive_path}.mmrs')
 
-    if os.path.isdir(self.tempfolder):
-      shutil.rmtree(self.tempfolder)
-
 def get_files_from_directory(directory: str) -> list[tuple[str, str]]:
   files = []
   for root, _, filenames in os.walk(directory):
@@ -243,29 +236,34 @@ def convert_standalone(file, base_folder, rel_path) -> None:
 
   standalone = StandaloneSequence(filename, base_folder)
 
-  standalone.copy(filepath)
+  try:
+    standalone.copy(filepath)
 
-  cosmetic_name = standalone.filename.replace('songforce', '').replace('songtest', '').strip(" _-")
-  meta_bank = standalone.instrument_set
+    cosmetic_name = standalone.filename.replace('songforce', '').replace('songtest', '').strip(" _-")
+    meta_bank = standalone.instrument_set
 
-  ff_or_bgm = [category.upper() in FANFARE_CATEGORIES for category in standalone.categories]
+    ff_or_bgm = [category.upper() in FANFARE_CATEGORIES for category in standalone.categories]
 
-  if all(ff_or_bgm):
-    song_type = 'fanfare'
-  elif any(boolean == False for boolean in ff_or_bgm) and any(boolean == True for boolean in ff_or_bgm):
-    raise Exception(f'ERROR: Mixed categories for categories in .zseq file: {filename}.zseq!')
-  else:
-    song_type = 'bgm'
+    if all(ff_or_bgm):
+      song_type = 'fanfare'
+    elif any(boolean == False for boolean in ff_or_bgm) and any(boolean == True for boolean in ff_or_bgm):
+      raise Exception(f'ERROR: Mixed categories for categories in .zseq file: {filename}.zseq!')
+    else:
+      song_type = 'bgm'
 
-  categories = ','.join(standalone.categories)
+    categories = ','.join(standalone.categories)
 
-  with open(f'{standalone.tempfolder}/{standalone.filename}.meta', 'a') as meta:
-    meta.write(cosmetic_name)
-    meta.write('\n' + meta_bank)
-    meta.write('\n' + song_type)
-    meta.write('\n' + categories)
+    with open(f'{standalone.tempfolder}/{standalone.filename}.meta', 'a') as meta:
+      meta.write(cosmetic_name)
+      meta.write('\n' + meta_bank)
+      meta.write('\n' + song_type)
+      meta.write('\n' + categories)
 
-  standalone.pack(standalone.filename, rel_path)
+    standalone.pack(standalone.filename, rel_path)
+
+  finally:
+    if os.path.isdir(standalone.tempfolder):
+      shutil.rmtree(standalone.tempfolder)
 
 def convert_archive(file, base_folder, rel_path) -> None:
   cosmetic_name : str = ''
@@ -279,93 +277,103 @@ def convert_archive(file, base_folder, rel_path) -> None:
 
   archive = MusicArchive(base_folder)
 
-  if os.path.isfile(f'{archive.convfolder}/{filename}.mmrs'):
-    return
-
   try:
-    archive.unpack(filename, filepath)
-  except:
-    return
+    if os.path.isfile(f'{archive.convfolder}/{filename}.mmrs'):
+      return
 
-  cosmetic_name = filename.replace('songforce', '').replace('songtest', '').strip(" _-")
-  original_temp = archive.tempfolder
+    try:
+      archive.unpack(filename, filepath)
+    except:
+      return
 
-  with open(f'{archive.tempfolder}/{archive.categories}', 'r') as text:
-    categories = ''.join(text.readlines(0))
+    cosmetic_name = filename.replace('songforce', '').replace('songtest', '').strip(" _-")
+    original_temp = archive.tempfolder
 
-    if '-' in categories:
-      categories = categories.split('-')
-    else:
-      categories = categories.split(',')
+    with open(f'{archive.tempfolder}/{archive.categories}', 'r') as text:
+      categories = text.readline().strip()
 
-    ff_or_bgm = [category.upper() in FANFARE_CATEGORIES for category in categories]
+      if '-' in categories:
+        categories = categories.split('-')
+      else:
+        categories = categories.split(',')
 
-    if all(ff_or_bgm):
-      song_type = 'fanfare'
-    elif any(boolean == False for boolean in ff_or_bgm) and any(boolean == True for boolean in ff_or_bgm):
-      raise Exception(f'ERROR: Mixed categories for categories.txt in .mmrs file: {filename}.mmrs!')
-    else:
-      song_type = 'bgm'
+      ff_or_bgm = [category.upper() in FANFARE_CATEGORIES for category in categories]
 
-    categories = ','.join(categories)
+      if all(ff_or_bgm):
+        song_type = 'fanfare'
+      elif any(boolean == False for boolean in ff_or_bgm) and any(boolean == True for boolean in ff_or_bgm):
+        raise Exception(f'ERROR: Mixed categories for categories.txt in .mmrs file: {filename}.mmrs!')
+      else:
+        song_type = 'bgm'
 
-  for base_name, ext in archive.sequences:
-    song_folder = f'{original_temp}_{base_name}'
-    os.makedirs(song_folder, exist_ok=True)
+      categories = ','.join(categories)
 
-    meta_bank = base_name
+    for base_name, ext in archive.sequences:
+      song_folder = f'{original_temp}_{base_name}'
+      os.makedirs(song_folder, exist_ok=True)
 
-    # Copy sequence files
-    original_seq = os.path.join(original_temp, f'{base_name}{ext}')
-    new_seq_path = os.path.join(song_folder, f'{base_name}.seq')
-    shutil.copy2(original_seq, new_seq_path)
+      try:
+        meta_bank = base_name
 
-    if base_name in archive.banks:
-      zbank, bankmeta = archive.banks[base_name]
-      shutil.copy2(os.path.join(original_temp, zbank), song_folder)
-      shutil.copy2(os.path.join(original_temp, bankmeta), song_folder)
+        # Copy sequence files
+        original_seq = os.path.join(original_temp, f'{base_name}{ext}')
+        new_seq_path = os.path.join(song_folder, f'{base_name}.seq')
+        shutil.copy2(original_seq, new_seq_path)
 
-      meta_bank = '-'
+        if base_name in archive.banks:
+          zbank, bankmeta = archive.banks[base_name]
+          shutil.copy2(os.path.join(original_temp, zbank), song_folder)
+          shutil.copy2(os.path.join(original_temp, bankmeta), song_folder)
 
-      for item in os.listdir(original_temp):
-        if item.endswith('.zsound'):
-          shutil.copy2(os.path.join(original_temp, item), song_folder)
+          meta_bank = '-'
 
-      for key, value in archive.zsounds.items():
-        command = f'ZSOUND:{key}.zsound:{value}'
-        zsounds.append(command)
+          for item in os.listdir(original_temp):
+            if item.endswith('.zsound'):
+              shutil.copy2(os.path.join(original_temp, item), song_folder)
 
-    if base_name in archive.formmasks:
-      formmask = archive.formmasks[base_name]
-      shutil.copy2(os.path.join(original_temp, formmask), song_folder)
+          for key, value in archive.zsounds.items():
+            command = f'ZSOUND:{key}.zsound:{value}'
+            zsounds.append(command)
 
-    # Copy extra non-processed files
-    for item in os.listdir(original_temp):
-      if item.endswith(('.seq', '.zseq', '.aseq', '.zbank', '.bankmeta', '.zsound', '.formmask')) or item == 'categories.txt':
-        continue
+        if base_name in archive.formmasks:
+          formmask = archive.formmasks[base_name]
+          shutil.copy2(os.path.join(original_temp, formmask), song_folder)
 
-      full_item_path = os.path.join(original_temp, item)
-      if os.path.isfile(full_item_path):
-        shutil.copy2(full_item_path, song_folder)
+        # Copy extra non-processed files
+        for item in os.listdir(original_temp):
+          if item.endswith(('.seq', '.zseq', '.aseq', '.zbank', '.bankmeta', '.zsound', '.formmask')) or item == 'categories.txt':
+            continue
 
-    with open(os.path.join(song_folder, f'{base_name}.meta'), 'a') as meta:
-      meta.write(cosmetic_name)
-      meta.write('\n' + meta_bank)
-      meta.write('\n' + song_type)
-      meta.write('\n' + categories)
-      if zsounds:
-        for garbage in zsounds:
-          meta.write('\n' + garbage)
+          full_item_path = os.path.join(original_temp, item)
+          if os.path.isfile(full_item_path):
+            shutil.copy2(full_item_path, song_folder)
 
-    temp_archive = MusicArchive(base_folder)
-    temp_archive.tempfolder = song_folder
-    temp_archive.pack(f'{filename}_{base_name}', rel_path)
+        with open(os.path.join(song_folder, f'{base_name}.meta'), 'a') as meta:
+          meta.write(cosmetic_name)
+          meta.write('\n' + meta_bank)
+          meta.write('\n' + song_type)
+          meta.write('\n' + categories)
+          if zsounds:
+            for garbage in zsounds:
+              meta.write('\n' + garbage)
 
-    if os.path.isdir(song_folder):
-      shutil.rmtree(song_folder)
+        temp_archive = MusicArchive(base_folder)
+        temp_archive.tempfolder = song_folder
 
-  if os.path.isdir(original_temp):
-    shutil.rmtree(original_temp)
+        if len(archive.sequences) > 1:
+          temp_archive.pack(f'{filename}_{base_name}', rel_path)
+        else:
+          temp_archive.pack(f'{filename}', rel_path)
+      finally:
+        if os.path.isdir(song_folder):
+          shutil.rmtree(song_folder)
+
+    if os.path.isdir(original_temp):
+      shutil.rmtree(original_temp)
+
+  finally:
+    if os.path.isdir(archive.tempfolder):
+      shutil.rmtree(archive.tempfolder)
 
 if __name__ == '__main__':
   def process_file(full_path, base_folder, rel_path):
