@@ -290,7 +290,7 @@ def convert_standalone(file, base_folder, rel_path) -> None:
     # Copy the sequence file to the temp folder
     standalone.copy(filepath)
 
-    cosmetic_name = re.sub(r'\W*(songforce|songtest)\W*', '', filename).strip()
+    cosmetic_name = re.sub(r'\W*(songforce|songtest)\W*', '', standalone.filename, flags=re.IGNORECASE).strip() or "???"
     meta_bank = standalone.instrument_set
 
     # 0x28 and higher indicate a custom instrument bank
@@ -345,7 +345,7 @@ def convert_archive(file, base_folder, rel_path) -> None:
     except:
       raise Exception(f'ERROR: Error processing mmrs file: {filename}.mmrs! Cannot unpack archive!')
 
-    cosmetic_name = re.sub(r'\W*(songforce|songtest)\W*', '', filename).strip()
+    cosmetic_name = re.sub(r'\W*(songforce|songtest)\W*', '', standalone.filename, flags=re.IGNORECASE).strip() or "???"
     original_temp = tempfolder
 
     # Process the categories file
