@@ -1,4 +1,5 @@
 import os, sys, time
+import re
 import tempfile
 import shutil
 import zipfile
@@ -289,7 +290,7 @@ def convert_standalone(file, base_folder, rel_path) -> None:
     # Copy the sequence file to the temp folder
     standalone.copy(filepath)
 
-    cosmetic_name = standalone.filename.replace('songforce', '').replace('songtest', '').strip(" _-")
+    cosmetic_name = re.sub(r'\W*(songforce|songtest)\W*', '', filename).strip()
     meta_bank = standalone.instrument_set
 
     # 0x28 and higher indicate a custom instrument bank
@@ -344,7 +345,7 @@ def convert_archive(file, base_folder, rel_path) -> None:
     except:
       raise Exception(f'ERROR: Error processing mmrs file: {filename}.mmrs! Cannot unpack archive!')
 
-    cosmetic_name = filename.replace('songforce', '').replace('songtest', '').strip(" _-")
+    cosmetic_name = re.sub(r'\W*(songforce|songtest)\W*', '', filename).strip()
     original_temp = tempfolder
 
     # Process the categories file
