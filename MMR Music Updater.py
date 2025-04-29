@@ -442,7 +442,7 @@ if __name__ == '__main__':
       if full_path.endswith('.zseq'):
         convert_standalone(full_path, base_folder, rel_path)
       elif full_path.endswith('.mmrs'):
-        convert_archive(full_path, base_folder, rel_path
+        convert_archive(full_path, base_folder, rel_path)
     except Exception as e:
       done_flag.set()
 
