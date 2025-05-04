@@ -5,13 +5,14 @@ import shutil
 import zipfile
 import unicodedata
 import threading, itertools
+import yaml
 
 from typing import Final
 
 import logging
 
 logging.basicConfig(
-    filename='conversion_errors.log',
+    filename='mmr-music-updater_errors.log',
     level=logging.ERROR,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
@@ -58,26 +59,32 @@ SEQ_EXTS : Final[tuple[str]] = (
   '.zseq',
 )
 
-FANFARE_CATEGORIES : Final[list[str]] = [
+FANFARE_CATEGORIES : Final[list[int]] = [
   # GROUPS
-  '8', '9', '10',
+  0x8, 0x9, 0x10,
   # INDIVIDUAL
-  '108', '109', '119', '120', '121', '122',
-  '124', '137', '139', '13D', '13F', '141',
-  '152', '155', '177', '178', '179', '17C',
-  '17E',
+  0x108, 0x109, 0x119, 0x120, 0x121, 0x122,
+  0x124, 0x137, 0x139, 0x13D, 0x13F, 0x141,
+  0x152, 0x155, 0x177, 0x178, 0x179, 0x17C,
+  0x17E,
 ]
 
 def spinner_task(message: str, done_flag: threading.Event) -> None:
-  '''Handles the spinner message in the terminal'''
-  for frame in itertools.cycle(SPINNER_FRAMES):
-    if done_flag.is_set():
-      break
-    sys.stdout.write(f"{PL}{CL}{PINK_204}{frame}{RESET} {GRAY_245}{message}{RESET}\n")
-    sys.stdout.flush()
-    time.sleep(0.07)
-  sys.stdout.write(f"{PL}{CL}{GREEN_79}✓{RESET} {GRAY_245}{message}{RESET}\n")
-  sys.stdout.flush()
+    for frame in itertools.cycle(SPINNER_FRAMES):
+        if done_flag.is_set():
+            break
+        sys.stderr.write(f"{PL}{CL}{PINK_204}{frame}{RESET} {GRAY_245}{message}{RESET}\n")
+        sys.stderr.flush()
+        time.sleep(0.07)
+    sys.stderr.write(f"{PL}{CL}{GREEN_79}✓{RESET} {GRAY_245}{message}{RESET}\n")
+    sys.stderr.flush()
+
+def start_spinner(message: str):
+    done_flag.clear()
+    thread = threading.Thread(target=spinner_task, args=(message, done_flag))
+    thread.start()
+    return thread
+
 
 def remove_diacritics(text: str) -> str:
   '''Normalizes filenames to prevent errors caused by diacritics'''
@@ -91,7 +98,7 @@ class StandaloneSequence:
   def __init__(self, filename, base_folder, tempfolder):
     self.filename = None
     self.instrument_set = None
-    self.categories = []
+    self.categories : int = []
 
     # Get the paths
     self.basefolder : str = base_folder
@@ -113,7 +120,7 @@ class StandaloneSequence:
 
     self.filename = remove_diacritics(parts[0])
     self.instrument_set = parts[1]
-    self.categories = parts[2].split('-')
+    self.categories = [int(c) for c in parts[2].split('-')]
 
   def copy(self, filepath) -> None:
     '''Copies sequence file to its tempfolder'''
@@ -160,7 +167,7 @@ class MusicArchive:
     self.formmasks  : dict[str, str] = {} # { '28': '28.formmask' }
 
     # Store zsounds in a dictionary
-    self.zsounds : dict[str, str] = {}
+    self.zsounds : dict[str, int] = {}
 
     # Get the paths
     self.basefolder : str = base_folder
@@ -171,12 +178,6 @@ class MusicArchive:
     '''Unpacks an mmrs file into its temp directory'''
     if not os.path.isdir(self.convfolder):
       os.mkdir(self.convfolder)
-
-    if os.path.isfile(filename + '.zip'):
-      os.remove(filename + '.zip')
-
-    if os.path.isfile(filename + '.mmrs'):
-      os.remove(filename + '.mmrs')
 
     with zipfile.ZipFile(filepath, 'r') as zip_archive:
       zip_archive.extractall(self.tempfolder)
@@ -225,7 +226,7 @@ class MusicArchive:
           raise ValueError(f'ERROR: Error processing zsound file: {f}! Too many or too few parameters in filename!')
 
         name = split[0]
-        temp_addr = split[1]
+        temp_addr = int(split[1], 16)
 
         os.rename(f'{self.tempfolder}/{f}', f'{self.tempfolder}/{name}.zsound')
 
@@ -269,14 +270,47 @@ def get_files_from_directory(directory: str) -> list[tuple[str, str]]:
 
   return files
 
+# META OUTPUT
+class FlowStyleList(list):
+  pass
+
+class HexInt(int):
+    pass
+
+def represent_flow_style_list(dumper, data):
+    return dumper.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=True)
+
+def represent_hexint(dumper, data):
+    return dumper.represent_scalar('tag:yaml.org,2002:int', f"0x{data:X}")
+
+yaml.add_representer(FlowStyleList, represent_flow_style_list)
+yaml.add_representer(HexInt, represent_hexint)
+
+def write_metadata(folder: str, base_name: str, cosmetic_name: str, meta_bank, song_type: str, categories, zsounds: dict[str, dict[str, int]] = None):
+  yaml_dict : dict = {
+    "game": "mm",
+    "metadata": {
+      "display name": cosmetic_name,
+      "instrument set": HexInt(meta_bank) if isinstance(meta_bank, int) else meta_bank,
+      "song type": song_type,
+      "music groups": FlowStyleList([HexInt(cat) for cat in categories]),
+    }
+  }
+
+  if zsounds:
+    yaml_dict["metadata"]["audio samples"] = zsounds
+
+  with open(f"{folder}/{base_name}.meta", "w", encoding="utf-8") as f:
+    yaml.dump(yaml_dict, f, sort_keys=False, allow_unicode=True)
+
 def convert_standalone(file, base_folder, rel_path) -> None:
   '''Processes and converts a zseq into a new mmrs file'''
-  cosmetic_name : str = ''
-  meta_bank     : str = ''
-  song_type     : str = ''
-  categories    : str = ''
+  cosmetic_name : str = None
+  meta_bank     : int = None
+  song_type     : str = None
 
-  filename = os.path.splitext(os.path.basename((remove_diacritics(file))))[0]
+  # filename = os.path.splitext(os.path.basename((remove_diacritics(file))))[0]
+  filename = os.path.splitext(os.path.basename((file)))[0]
   filepath = os.path.abspath(file)
 
   # Create the temp folder and ensure it deletes itself if an exception occurs
@@ -284,24 +318,24 @@ def convert_standalone(file, base_folder, rel_path) -> None:
     standalone = StandaloneSequence(filename, base_folder, tempfolder)
 
     # Skip already converted files
-    if os.path.isfile(f'{archive.convfolder}/{filename}.zseq'):
+    if os.path.isfile(f'{standalone.convfolder}/{filename}.zseq'):
       return
 
     # Copy the sequence file to the temp folder
     standalone.copy(filepath)
 
-    cosmetic_name = re.sub(r'\W*(songforce|songtest)\W*', '', standalone.filename, flags=re.IGNORECASE).strip() or "???"
-    meta_bank = standalone.instrument_set
+    cosmetic_name = re.sub(r'\s+', ' ', re.sub(r'(^|\W)(songforce|songtest)(?=\W|$)', '', standalone.filename, flags=re.IGNORECASE)).strip() or "???"
+    meta_bank = int(standalone.instrument_set, 16)
 
     # 0x28 and higher indicate a custom instrument bank
     try:
-      if int(meta_bank, 16) > 0x27:
+      if meta_bank > 0x27:
         raise ValueError(f'ERROR: Error processing zseq file: {filename}.zseq! Instrument bank outside valid values!')
     except:
       raise ValueError(f'ERROR: Error processing zseq file: {filename}.zseq! Invalid instrument bank value!')
 
     # Check for mixed BGM and Fanfare categories
-    ff_or_bgm = [category.upper() in FANFARE_CATEGORIES for category in standalone.categories]
+    ff_or_bgm = [category in FANFARE_CATEGORIES for category in standalone.categories]
 
     if all(ff_or_bgm):
       song_type = 'fanfare'
@@ -310,14 +344,8 @@ def convert_standalone(file, base_folder, rel_path) -> None:
     else:
       song_type = 'bgm'
 
-    categories = ','.join(standalone.categories)
-
     # Write the meta file
-    with open(f'{tempfolder}/{standalone.filename}.meta', 'a') as meta:
-      meta.write(cosmetic_name)
-      meta.write('\n' + meta_bank)
-      meta.write('\n' + song_type)
-      meta.write('\n' + categories)
+    write_metadata(tempfolder, standalone.filename, cosmetic_name, meta_bank, song_type, standalone.categories)
 
     standalone.pack(standalone.filename, rel_path)
 
@@ -326,10 +354,11 @@ def convert_archive(file, base_folder, rel_path) -> None:
   cosmetic_name : str = ''
   meta_bank     : str = ''
   song_type     : str = ''
-  categories          = ''
-  zsounds : list[str] = []
+  categories          = []
+  zsounds : dict[str, dict[str, int]] = {}
 
-  filename = os.path.splitext(os.path.basename((remove_diacritics(file))))[0]
+  #filename = os.path.splitext(os.path.basename((remove_diacritics(file))))[0]
+  filename = os.path.splitext(os.path.basename((file)))[0]
   filepath = os.path.abspath(file)
 
   # Create the temp folder and ensure it deletes itself if an exception occurs
@@ -345,7 +374,7 @@ def convert_archive(file, base_folder, rel_path) -> None:
     except:
       raise Exception(f'ERROR: Error processing mmrs file: {filename}.mmrs! Cannot unpack archive!')
 
-    cosmetic_name = re.sub(r'\W*(songforce|songtest)\W*', '', standalone.filename, flags=re.IGNORECASE).strip() or "???"
+    cosmetic_name = re.sub(r'\s+', ' ', re.sub(r'(^|\W)(songforce|songtest)(?=\W|$)', '', filename, flags=re.IGNORECASE)).strip() or "???"
     original_temp = tempfolder
 
     # Process the categories file
@@ -354,15 +383,15 @@ def convert_archive(file, base_folder, rel_path) -> None:
 
       # There are two valid delimiters
       if '-' in categories:
-        categories = categories.split('-')
+        categories = [int(c, 16) for c in categories.split('-')]
       else:
         try:
-          categories = categories.split(',')
+          categories = [int(c, 16) for c in categories.split(',')]
         except:
           raise Exception(f'ERROR: Error processing categories file: {filename}.mmrs! Categories cannot be separated!')
 
       # Check for mixed BGM and Fanfare categories
-      ff_or_bgm = [category.upper() in FANFARE_CATEGORIES for category in categories]
+      ff_or_bgm = [category in FANFARE_CATEGORIES for category in categories]
 
       if all(ff_or_bgm):
         song_type = 'fanfare'
@@ -371,14 +400,12 @@ def convert_archive(file, base_folder, rel_path) -> None:
       else:
         song_type = 'bgm'
 
-      categories = ','.join(categories)
-
     # If there's multiple sequence files, loop through them
     for base_name, ext in archive.sequences:
       # Create a new temp folder for each individual sequence file
       with tempfile.TemporaryDirectory(prefix='mmrs_convert_2_') as song_folder:
 
-        meta_bank = base_name # The instrument set is the name of the sequence
+        meta_bank = int(base_name, 16) # The instrument set is the name of the sequence
 
         # Copy sequence file into the temp folder and change its extension to .seq
         original_seq = os.path.join(original_temp, f'{base_name}{ext}')
@@ -392,7 +419,7 @@ def convert_archive(file, base_folder, rel_path) -> None:
           shutil.copy2(os.path.join(original_temp, zbank), song_folder)
           shutil.copy2(os.path.join(original_temp, bankmeta), song_folder)
 
-          meta_bank = '-' # The file uses a custom instrument set
+          meta_bank = 'custom' # The file uses a custom instrument set
 
           for item in os.listdir(original_temp):
             if item.endswith('.zsound'):
@@ -400,8 +427,7 @@ def convert_archive(file, base_folder, rel_path) -> None:
 
           for key, value in archive.zsounds.items():
             if key and value:
-              command = f'ZSOUND:{key}.zsound:{value}'
-              zsounds.append(command)
+              zsounds[f"{key}.zsound"] = { "temp address": value }
 
         # Copy the formmask file into the temp folder
         if base_name in archive.formmasks:
@@ -418,14 +444,7 @@ def convert_archive(file, base_folder, rel_path) -> None:
             shutil.copy2(full_item_path, song_folder)
 
         # Write the meta file
-        with open(os.path.join(song_folder, f'{base_name}.meta'), 'a') as meta:
-          meta.write(cosmetic_name)
-          meta.write('\n' + meta_bank)
-          meta.write('\n' + song_type)
-          meta.write('\n' + categories)
-          if zsounds:
-            for garbage in zsounds:
-              meta.write('\n' + garbage)
+        write_metadata(song_folder, base_name, cosmetic_name, meta_bank, song_type, categories, zsounds if zsounds else None)
 
         temp_archive = MusicArchive(base_folder, song_folder)
 
@@ -446,35 +465,35 @@ if __name__ == '__main__':
         convert_archive(full_path, base_folder, rel_path)
     except Exception as e:
       done_flag.set()
-
-      if spinner_thread.is_alive():
-          spinner_thread.join()
+      spinner_thread.join()
 
       print(f"{RED}Error processing {full_path}:{RESET}")
       print(f"{YELLOW}{str(e)}{RESET}")
       logging.error(f"Error processing {full_path}", exc_info=True)
 
-      done_flag.clear()
-      spinner_thread = threading.Thread(target=spinner_task, args=("Processing files...", done_flag))
-      spinner_thread.start()
+      spinner_thread = start_spinner("Processing files...")
 
   # Let the user know the process is ongoing
-  done_flag.clear()
-  spinner_thread = threading.Thread(target=spinner_task, args=("Processing files...", done_flag))
-  spinner_thread.start()
+  spinner_thread = start_spinner("Processing files...")
 
   try:
     for file in FILES:
       # If the path is a directory, get all files and then process them copying directories
       if os.path.isdir(file):
+        # DEBUG: Print out which directory is being processed
+        # print(f"{CYAN}Processing directory:{RESET} {file}")
         base_folder = os.path.abspath(file)
         file_list = get_files_from_directory(base_folder)
 
         for full_path, rel_path in file_list:
+          # DEBUG: Print out which file in the subdir is being processed
+          # print(f"{GRAY_248}  └─ {rel_path}{RESET}")
           process_file(full_path, base_folder, rel_path)
 
       # If the path is a file, process the file directly
       else:
+        # DEBUG: Print out the which file is being processed
+        # print(f"{CYAN}Processing file:{RESET} {file}")
         base_folder = os.path.dirname(os.path.abspath(file))
         rel_path = os.path.basename(file)
         full_path = os.path.abspath(file)
