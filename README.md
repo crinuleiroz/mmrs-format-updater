@@ -1,6 +1,9 @@
 # Majora's Mask Music File Updater
 This is a python script that copies and updates standalone sequence files (`.zseq`) and packed music files (`.mmrs`) to the updated packed format that uses a YAML META (`.meta`) file to store metadata.
 
+> [!NOTE]
+> Music conversion is built into Majora's Mask Randomizer, so any old files detected will automatically be converted before writing music. This script acts as a standalone Python version of `MusicConversionUtils.cs` that users may use whenever they want to without needing to create a seed.
+
 ## 🔧 How To Use
 To use this script, follow the steps below:
 
