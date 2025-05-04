@@ -4,6 +4,12 @@ This is a python script that copies and updates standalone sequence files (`.zse
 > [!NOTE]
 > Music conversion is built into Majora's Mask Randomizer, so any old files detected will automatically be converted before writing music. This script acts as a standalone Python version of `MusicConversionUtils.cs` that users may use whenever they want to without needing to create a seed.
 
+## 📋 Requirements
+This script requires the PyYAML module:
+```
+pip install pyyaml
+```
+
 ## 🔧 How To Use
 To use this script, follow the steps below:
 
