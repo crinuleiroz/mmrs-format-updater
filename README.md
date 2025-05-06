@@ -1,4 +1,4 @@
-# Majora's Mask Music File Updater
+# Majora's Mask Randomzier Music File Updater
 This is a python script that copies and updates standalone sequence files (`.zseq`) and packed music files (`.mmrs`) to the updated packed format that uses a YAML META (`.meta`) file to store metadata.
 
 > [!NOTE]
