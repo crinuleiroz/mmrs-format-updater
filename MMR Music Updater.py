@@ -286,7 +286,9 @@ def represent_hexint(dumper, data):
 yaml.add_representer(FlowStyleList, represent_flow_style_list)
 yaml.add_representer(HexInt, represent_hexint)
 
-def write_metadata(folder: str, base_name: str, cosmetic_name: str, meta_bank, song_type: str, categories, zsounds: dict[str, dict[str, int]] = None):
+def write_metadata(folder: str, base_name: str, cosmetic_name: str, meta_bank, song_type: str, categories, zsounds: dict[str, dict[str, int]] = None, formmask: list[str] = None):
+  metadata_file_path = f"{folder}/{base_name}.metadata"
+  
   yaml_dict : dict = {
     "game": "mm",
     "metadata": {
@@ -300,8 +302,23 @@ def write_metadata(folder: str, base_name: str, cosmetic_name: str, meta_bank, s
   if zsounds:
     yaml_dict["metadata"]["audio samples"] = zsounds
 
-  with open(f"{folder}/{base_name}.metadata", "w", encoding="utf-8") as f:
+  with open(metadata_file_path, "w", encoding="utf-8") as f:
     yaml.dump(yaml_dict, f, sort_keys=False, allow_unicode=True)
+    
+  if formmask:
+    with open(metadata_file_path, 'a', encoding='utf-8') as f:
+      f.write("formmask: [\n")
+      
+      for i, value in enumerate(formmask):
+        comment = f"Channel {i}" if i < 16 else "Cumulative States"
+        f.write(f'  "{value}"')
+        
+        if i != len(formmask) - 1:
+          f.write(",")
+          
+        f.write(f" # {comment}\n")
+        
+      f.write("]\n")
 
 def convert_standalone(file, base_folder, rel_path) -> None:
   '''Processes and converts a zseq into a new mmrs file'''
@@ -408,6 +425,7 @@ def convert_archive(file, base_folder, rel_path) -> None:
     for base_name, ext in archive.sequences:
       # Create a new temp folder for each individual sequence file
       with tempfile.TemporaryDirectory(prefix='mmrs_convert_2_') as song_folder:
+        formmask: list[str] = []
 
         meta_bank = int(base_name, 16) # The instrument set is the name of the sequence
 
@@ -435,8 +453,12 @@ def convert_archive(file, base_folder, rel_path) -> None:
 
         # Copy the formmask file into the temp folder
         if base_name in archive.formmasks:
-          formmask = archive.formmasks[base_name]
-          shutil.copy2(os.path.join(original_temp, formmask), song_folder)
+          formmask_path = os.path.join(original_temp, archive.formmasks[base_name])
+          try:
+            with open(formmask_path, 'r', encoding='utf-8') as f:
+              formmask = yaml.safe_load(f)
+          except Exception as e:
+            raise Exception(f"ERROR: Failed to parse formmask file {formmask_path}: {str(e)}")
 
         # Copy extra non-processed files
         for item in os.listdir(original_temp):
@@ -448,7 +470,7 @@ def convert_archive(file, base_folder, rel_path) -> None:
             shutil.copy2(full_item_path, song_folder)
 
         # Write the meta file
-        write_metadata(song_folder, base_name, cosmetic_name, meta_bank, song_type, categories, zsounds if zsounds else None)
+        write_metadata(song_folder, base_name, cosmetic_name, meta_bank, song_type, categories, zsounds if zsounds else None, formmask if formmask else None)
 
         temp_archive = MusicArchive(base_folder, song_folder)
 
