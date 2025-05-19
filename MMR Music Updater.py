@@ -5,6 +5,7 @@ import shutil
 import zipfile
 import unicodedata
 import threading, itertools
+from concurrent.futures import ThreadPoolExecutor
 import yaml
 
 from typing import Final
@@ -85,7 +86,6 @@ def start_spinner(message: str):
     thread.start()
     return thread
 
-
 def remove_diacritics(text: str) -> str:
   '''Normalizes filenames to prevent errors caused by diacritics'''
   normalized = unicodedata.normalize('NFD', text)
@@ -94,183 +94,109 @@ def remove_diacritics(text: str) -> str:
   return without_diacritics
 
 class StandaloneSequence:
-  '''Stores and processes standalone sequence file information, also handling unpacking and repacking'''
-  def __init__(self, filename, base_folder, tempfolder):
-    self.filename = None
-    self.instrument_set = None
-    self.categories : int = []
+  def __init__(self, filename, tempfolder) -> None:
+    self.filename, self.instrument_set, self.categories = self.parse_zseq_filename(filename)
+    self.tempfolder = tempfolder
 
-    # Get the paths
-    self.basefolder : str = base_folder
-    self.tempfolder : str = tempfolder
-    self.convfolder : str = os.path.join(self.basefolder, 'converted')
-
-    # Get the metadata from the filename
-    self._parse_filename(filename)
-
-  def _parse_filename(self, filename) -> None:
-    '''Extracts metadata from sequence file's filename'''
-    basename = os.path.basename(filename)
-    name_no_ext = basename.replace('.zseq', '')
-
-    parts = name_no_ext.split('_')
+  def parse_zseq_filename(self, filename) -> tuple[str, int, list[str]]:
+    parts = os.path.splitext(filename)[0].split('_')
 
     if len(parts) != 3:
-      raise ValueError(f'ERROR: Error processing zseq file: {basename}! Too many or too few parameters in filename!')
+      raise Exception(f"StandaloneSequence Error: Invalid filename format.")
 
-    self.filename = remove_diacritics(parts[0])
-    self.instrument_set = parts[1]
-    self.categories = [int(c) for c in parts[2].split('-')]
+    return parts[0], int(parts[1], 16), parts[2].split('-')
 
   def copy(self, filepath) -> None:
-    '''Copies sequence file to its tempfolder'''
-    if not os.path.isdir(self.convfolder):
-      os.mkdir(self.convfolder)
+    temp_seq_filepath = os.path.join(self.tempfolder, f"{self.filename}.seq")
 
-    if os.path.isfile(self.filename + '.zip'):
-      os.remove(self.filename + '.zip')
-
-    if os.path.isfile(self.filename + '.mmrs'):
-      os.remove(self.filename + '.mmrs')
-
-    with open(filepath, 'rb') as src:
-      with open(f'{self.tempfolder}/{self.filename}.seq', 'wb') as dst:
-        dst.write(src.read())
-
-  def pack(self, filename, rel_path) -> None:
-    '''Packs the temp folder into a new mmrs file'''
-    output_path = os.path.join(self.convfolder, os.path.dirname(rel_path))
-
-    if os.path.exists(output_path) and os.path.isfile(output_path):
-      os.remove(output_path)
-
-    os.makedirs(output_path, exist_ok=True)
-
-    archive_path = os.path.join(output_path, filename)
-    shutil.make_archive(archive_path, 'zip', self.tempfolder)
-
-    mmrs_path = f'{archive_path}.mmrs'
-    if os.path.exists(mmrs_path):
-      if os.path.isdir(mmrs_path):
-        shutil.rmtree(mmrs_path)
-      else:
-        os.remove(mmrs_path)
-
-    os.rename(f'{archive_path}.zip', f'{archive_path}.mmrs')
+    shutil.copyfile(filepath, temp_seq_filepath)
 
 class MusicArchive:
-  '''Stores packed music file information, also handling unpacking and repacking'''
-  def __init__(self, base_folder, tempfolder):
-    self.sequences  : list[tuple[str, str]] = [] # (name, extension)
-    self.categories : str = None
-    self.banks      : dict[str, tuple[str, str]] = {} # { '28': ('28.zbank', '28.bankmeta')}
-    self.formmasks  : dict[str, str] = {} # { '28': '28.formmask' }
-
-    # Store zsounds in a dictionary
+  def __init__(self, tempfolder):
+    self.sequences: list[tuple[str, str]] = []
+    self.categories: str = None
+    self.banks: dict[str, tuple[str, str]] = {}
+    self.formmasks: dict[str, str] = {}
     self.zsounds : dict[str, int] = {}
+    self.tempfolder = tempfolder
 
-    # Get the paths
-    self.basefolder : str = base_folder
-    self.tempfolder : str = tempfolder
-    self.convfolder : str = os.path.join(self.basefolder, 'converted')
-
-  def unpack(self, filename : str, filepath : str) -> None:
-    '''Unpacks an mmrs file into its temp directory'''
-    if not os.path.isdir(self.convfolder):
-      os.mkdir(self.convfolder)
+  def unpack(self, filepath: str) -> None:
+    if os.path.exists(self.tempfolder):
+      os.rmdir(self.tempfolder)
 
     with zipfile.ZipFile(filepath, 'r') as zip_archive:
       zip_archive.extractall(self.tempfolder)
 
+    sample_counter: int = 1
     for f in os.listdir(self.tempfolder):
-      # Store sequence(s)
-      if f.endswith(SEQ_EXTS):
-        base, ext = os.path.splitext(f)
-        self.sequences.append((base, ext))
+      filename = os.path.basename(f)
+      base_name = os.path.splitext(f)[0]
+      extension = os.path.splitext(f)[1].lower()
+
+      if extension in SEQ_EXTS:
+        self.sequences.append((base_name, extension))
         continue
 
-      # Sore the zbank and bankmeta information
-      if f.endswith('.zbank'):
-        base = os.path.splitext(f)[0]
-        zbank_path = f
-        bankmeta_path = f'{base}.bankmeta'
-
-        if os.path.exists(os.path.join(self.tempfolder, bankmeta_path)):
-          self.banks[base] = (zbank_path, bankmeta_path)
-        else:
-          raise FileNotFoundError(f'ERROR: Error processing zbank file: {zbank_path}! Missing bankmeta file!')
+      if extension == ".zbank":
+        bankmeta_path = f'{base_name}.bankmeta'
+        if not os.path.exists(os.path.join(self.tempfolder, bankmeta_path)):
+          raise FileNotFoundError(f"Missing bankmeta for {filepath}!")
+        self.banks[base_name] = (filename, bankmeta_path)
         continue
 
-      if f.endswith('.bankmeta'):
+      if extension == ".formmask":
+        self.formmasks[base_name] = filename
         continue
 
-      # Store the categories information
-      if f == 'categories.txt':
+      if extension == ".zsound":
+        self.process_zsounds(filename, sample_counter)
+
+      if f == "categories.txt":
         self.categories = f
-        continue
-
-      # Store the formmask information
-      if f.endswith('.formmask'):
-        base = os.path.splitext(f)[0]
-        self.formmasks[base] = f
-        continue
-
-      # Store the zsound information
-      if f.endswith('.zsound'):
-        split = f.split('.zsound')
-        base = split[0]
-        split = base.split('_')
-
-        # Ensure the format is correct: name_tempaddr.zsound
-        if len(split) != 2:
-          raise ValueError(f'ERROR: Error processing zsound file: {f}! Too many or too few parameters in filename!')
-
-        name = split[0]
-        temp_addr = int(split[1], 16)
-
-        os.rename(f'{self.tempfolder}/{f}', f'{self.tempfolder}/{name}.zsound')
-
-        self.zsounds[name] = temp_addr
-        continue
 
     if not self.sequences:
-      raise FileNotFoundError(f'ERROR: Error processing mmrs file: {filename}! Missing sequence file!')
+      raise FileNotFoundError(f'MusicArchive Error: No sequence file found!')
     if not self.categories:
-      raise FileNotFoundError(f'ERROR: Error processing mmrs file: {filename}! Missing categories file!')
+      raise FileNotFoundError(f'MusicArchive Error: No categories.txt file found!')
 
-  def pack(self, filename, rel_path) -> None:
-    '''Packs the temp folder into a new mmrs file'''
-    output_path = os.path.join(self.convfolder, os.path.dirname(rel_path))
+  def process_zsounds(self, file: str, sample_counter: int):
+    base_name: str = file.split(".zsound")[0]
+    parts: tuple = base_name.split("_")
 
-    if os.path.exists(output_path) and os.path.isfile(output_path):
-      os.remove(output_path)
+    sample_name: str = ""
+    temp_address: int = -1
 
-    os.makedirs(output_path, exist_ok=True)
+    try:
+      if len(parts) == 2:
+        sample_name = parts[0]
+        temp_address = int(parts[1], 16)
 
-    archive_path = os.path.join(output_path, filename)
-    shutil.make_archive(archive_path, 'zip', self.tempfolder)
+      elif len(parts) == 1:
+        sample_name = f"Sample{sample_counter}"
+        temp_address = int(parts[0], 16)
+        sample_counter += 1
 
-    mmrs_path = f'{archive_path}.mmrs'
-    if os.path.exists(mmrs_path):
-      if os.path.isdir(mmrs_path):
-        shutil.rmtree(mmrs_path)
       else:
-        os.remove(mmrs_path)
+        raise ValueError(f"process_zsounds Error: An exception occured while processing a zsound file: {file} - wrong format!")
+    except ValueError as e:
+      raise ValueError(f"process_zsounds Error: {e}")
 
-    os.rename(f'{archive_path}.zip', mmrs_path)
+    old_path = os.path.join(self.tempfolder, file)
+    new_path = os.path.join(self.tempfolder, f"{sample_name}.zsound")
 
-def get_files_from_directory(directory: str) -> list[tuple[str, str]]:
-  '''Recursively searches a directory to copy its structure'''
-  files = []
-  for root, _, filenames in os.walk(directory):
-    for filename in filenames:
-      full_path = os.path.join(root, filename)
-      rel_path = os.path.relpath(full_path, start=directory)
-      files.append((full_path, rel_path))
+    suffix: int = 1
+    while os.path.exists(new_path):
+      new_path = os.path.join(self.tempfolder, f"{sample_name}{suffix}.zsound")
+      suffix += 1
 
-  return files
+    try:
+      shutil.move(old_path, new_path)
+    except:
+      return
 
-# META OUTPUT
+    self.zsounds[os.path.splitext(os.path.basename(new_path))[0]] = HexInt(temp_address)
+
+# Write Metadata File
 class FlowStyleList(list):
   pass
 
@@ -288,7 +214,7 @@ yaml.add_representer(HexInt, represent_hexint)
 
 def write_metadata(folder: str, base_name: str, cosmetic_name: str, meta_bank, song_type: str, categories, zsounds: dict[str, dict[str, int]] = None, formmask: list[str] = None):
   metadata_file_path = f"{folder}/{base_name}.metadata"
-  
+
   yaml_dict : dict = {
     "game": "mm",
     "metadata": {
@@ -304,234 +230,258 @@ def write_metadata(folder: str, base_name: str, cosmetic_name: str, meta_bank, s
 
   with open(metadata_file_path, "w", encoding="utf-8") as f:
     yaml.dump(yaml_dict, f, sort_keys=False, allow_unicode=True)
-    
+
   if formmask:
     with open(metadata_file_path, 'a', encoding='utf-8') as f:
       f.write("formmask: [\n")
-      
+
       for i, value in enumerate(formmask):
         comment = f"Channel {i}" if i < 16 else "Cumulative States"
         f.write(f'  "{value}"')
-        
+
         if i != len(formmask) - 1:
           f.write(",")
-          
+
         f.write(f" # {comment}\n")
-        
+
       f.write("]\n")
 
-def convert_standalone(file, base_folder, rel_path) -> None:
-  '''Processes and converts a zseq into a new mmrs file'''
-  cosmetic_name : str = None
-  meta_bank     : int = None
-  song_type     : str = None
+def clean_cosmetic_name(filename: str) -> str:
+  return re.sub(r'\s+', ' ', re.sub(r'(^|\W)(songforce|songtest)(?=\W|$)', '', filename, flags=re.IGNORECASE)).strip() or "???"
 
-  # filename = os.path.splitext(os.path.basename((remove_diacritics(file))))[0]
-  filename = os.path.splitext(os.path.basename((file)))[0]
-  filepath = os.path.abspath(file)
+def parse_categories(raw_categories: list[str]) -> list[int]:
+  return [int(c.strip(), 16) for c in raw_categories]
 
-  # Create the temp folder and ensure it deletes itself if an exception occurs
+def get_song_type(categories, filename: str) -> str:
+  ff_or_bgm = [category in FANFARE_CATEGORIES for category in categories]
+
+  if all(ff_or_bgm):
+    return 'fanfare'
+  elif not all(ff_or_bgm) and any(ff_or_bgm):
+    raise ValueError(f"ERROR: Mixed BGM and Fanfare categories in {filename}!")
+  else:
+    return 'bgm'
+
+def parse_categories_and_song_type(category_filepath: str, filename: str) -> tuple[list[int], str]:
+  with open(category_filepath, 'r') as f:
+    raw_categories = f.readline().strip()
+
+  if '-' in raw_categories:
+    parts = raw_categories.split('-')
+  else:
+    parts = raw_categories.split(',')
+
+  try:
+    categories = [int(p.strip(), 16) for p in parts if p.strip()]
+  except Exception as e:
+    raise Exception(f'ERROR: Error processing categories file: {filename}.mmrs! Categories cannot be separated!')
+
+  song_type = get_song_type(categories, filename)
+
+  return categories, song_type
+
+def copy_unprocessed_files(source_dir: str, destination_dir: str) -> None:
+  skip_extensions: list[str] = ['.seq', '.zseq', '.aseq', '.zbank', '.bankmeta', '.zsound', '.formmask']
+  skip_categories: str = 'categories.txt'
+
+  for file in os.listdir(source_dir):
+    name: str = os.path.basename(file)
+    extension: str = os.path.splitext(file)[1]
+
+    if extension.lower() in skip_extensions or name.lower() == skip_categories:
+      continue
+
+    shutil.copyfile(os.path.join(source_dir, file), os.path.join(destination_dir, file))
+
+def pack(filename: str, tempfolder: str, destination_dir: str) -> None:
+    '''Packs the temp folder into a new mmrs file'''
+    archive_base = os.path.join(destination_dir, filename)
+    zip_path = f"{archive_base}.zip"
+    mmrs_path = f"{archive_base}.mmrs"
+
+    shutil.make_archive(archive_base, 'zip', tempfolder)
+
+    if os.path.exists(mmrs_path):
+      os.remove(mmrs_path)
+
+    os.rename(zip_path, mmrs_path)
+
+# Convert zseq files
+def convert_standalone(input_file: str, destination_dir: str) -> None:
+  filename = os.path.splitext(os.path.basename(input_file))[0]
+  filepath = os.path.abspath(input_file)
+
+  # If the file already exists, return
+  if os.path.isfile(f"{destination_dir}/{filename}.mmrs"):
+    return
+
+  # Begin conversion
   with tempfile.TemporaryDirectory(prefix='zseq_convert_') as tempfolder:
-    standalone = StandaloneSequence(filename, base_folder, tempfolder)
-
-    # Skip already converted files
-    if os.path.isfile(f'{standalone.convfolder}/{filename}.zseq'):
-      return
-
-    # Copy the sequence file to the temp folder
-    standalone.copy(filepath)
-
-    cosmetic_name = re.sub(r'\s+', ' ', re.sub(r'(^|\W)(songforce|songtest)(?=\W|$)', '', standalone.filename, flags=re.IGNORECASE)).strip() or "???"
-    meta_bank = int(standalone.instrument_set, 16)
-
-    # 0x28 and higher indicate a custom instrument bank
-    try:
-      if meta_bank > 0x27:
-        raise ValueError(f'ERROR: Error processing zseq file: {filename}.zseq! Instrument bank outside valid values!')
-    except:
-      raise ValueError(f'ERROR: Error processing zseq file: {filename}.zseq! Invalid instrument bank value!')
-
-    # Check for mixed BGM and Fanfare categories
-    ff_or_bgm = [category in FANFARE_CATEGORIES for category in standalone.categories]
-
-    if all(ff_or_bgm):
-      song_type = 'fanfare'
-    elif not all(ff_or_bgm) and any(ff_or_bgm):
-      raise ValueError(f'ERROR: Error processing zseq file: {filename}.zseq! Mixed BGM and Fanfare categories!')
-    else:
-      song_type = 'bgm'
-
-    # Write the meta file
-    write_metadata(tempfolder, standalone.filename, cosmetic_name, meta_bank, song_type, standalone.categories)
-
-    standalone.pack(standalone.filename, rel_path)
-
-def convert_archive(file, base_folder, rel_path) -> None:
-  '''Processes and converts an old mmrs file into a new mmrs file'''
-  cosmetic_name : str = ''
-  meta_bank     : str = ''
-  song_type     : str = ''
-  categories          = []
-  zsounds : dict[str, dict[str, int]] = {}
-
-  #filename = os.path.splitext(os.path.basename((remove_diacritics(file))))[0]
-  filename = os.path.splitext(os.path.basename((file)))[0]
-  filepath = os.path.abspath(file)
-
-  # Create the temp folder and ensure it deletes itself if an exception occurs
-  with tempfile.TemporaryDirectory(prefix='mmrs_convert_') as tempfolder:
-    archive = MusicArchive(base_folder, tempfolder)
-
-    # Skip already converted files
-    if os.path.isfile(f'{archive.convfolder}/{filename}.mmrs'):
-      return
+    standalone_seq = StandaloneSequence(filename, tempfolder)
 
     try:
-      archive.unpack(filename, filepath)
-    except:
-      raise Exception(f'ERROR: Error processing mmrs file: {filename}.mmrs! Cannot unpack archive!')
+      standalone_seq.copy(filepath)
 
-    # The file is already converted, so move on
-    if any(f.endswith('.metadata') for f in os.listdir(tempfolder)):
-      return
+      cosmetic_name = clean_cosmetic_name(standalone_seq.filename)
+      instrument_set = standalone_seq.instrument_set
 
-    cosmetic_name = re.sub(r'\s+', ' ', re.sub(r'(^|\W)(songforce|songtest)(?=\W|$)', '', filename, flags=re.IGNORECASE)).strip() or "???"
-    original_temp = tempfolder
+      # 0x28 and higher indicate a custom instrument bank
+      try:
+        if instrument_set > 0x27:
+          raise ValueError(f'ERROR: Error processing zseq file: {filename}.zseq! Instrument bank outside valid values!')
+      except Exception as e:
+        raise Exception(e)
 
-    # Process the categories file
-    with open(f'{tempfolder}/{archive.categories}', 'r') as text:
-      categories = text.readline().strip()
+      categories = parse_categories(standalone_seq.categories)
+      song_type = get_song_type(categories, filename)
 
-      # There are two valid delimiters
-      if '-' in categories:
-        categories = [int(c, 16) for c in categories.split('-')]
-      else:
-        try:
-          categories = [int(c, 16) for c in categories.split(',')]
-        except:
-          raise Exception(f'ERROR: Error processing categories file: {filename}.mmrs! Categories cannot be separated!')
+      # Write the metadata and pack the file
+      write_metadata(standalone_seq.tempfolder, standalone_seq.filename, cosmetic_name, instrument_set, song_type, categories)
+      pack(standalone_seq.filename, standalone_seq.tempfolder, destination_dir)
 
-      # Check for mixed BGM and Fanfare categories
-      ff_or_bgm = [category in FANFARE_CATEGORIES for category in categories]
+    except Exception as e:
+      raise Exception(e)
 
-      if all(ff_or_bgm):
-        song_type = 'fanfare'
-      elif not all(ff_or_bgm) and any(ff_or_bgm):
-        raise ValueError(f'ERROR: Error processing categories file: {filename}.mmrs! Mixed BGM and Fanfare categories!')
-      else:
-        song_type = 'bgm'
+# Handling for multiple sequences in an archive
+def process_archive_sequences(archive: MusicArchive, destination_dir: str, filename: str, cosmetic_name: str, categories: list, song_type: str, original_temp: str):
+  zsounds: dict[str, int] = {}
+  formmask = None
 
-    # If there's multiple sequence files, loop through them
-    for base_name, ext in archive.sequences:
-      # Create a new temp folder for each individual sequence file
-      with tempfile.TemporaryDirectory(prefix='mmrs_convert_2_') as song_folder:
-        formmask: list[str] = []
+  for base_name, ext in archive.sequences:
+    with tempfile.TemporaryDirectory(prefix='mmrs_convert_2_') as song_folder:
+      instrument_set = int(base_name, 16)
 
-        meta_bank = int(base_name, 16) # The instrument set is the name of the sequence
+      original_sequence = os.path.join(original_temp, f'{base_name}{ext}')
+      new_sequence_path = os.path.join(song_folder, f'{base_name}.seq')
+      shutil.copyfile(original_sequence, new_sequence_path)
 
-        # Copy sequence file into the temp folder and change its extension to .seq
-        original_seq = os.path.join(original_temp, f'{base_name}{ext}')
-        new_seq_path = os.path.join(song_folder, f'{base_name}.seq')
-        shutil.copy2(original_seq, new_seq_path)
+      if base_name in archive.banks:
+        bank, bankmeta = archive.banks[base_name]
 
-        # Store custom bank related information for meta writing
-        # If there's multiple bank files, loop through them
-        if base_name in archive.banks:
-          zbank, bankmeta = archive.banks[base_name]
-          shutil.copy2(os.path.join(original_temp, zbank), song_folder)
-          shutil.copy2(os.path.join(original_temp, bankmeta), song_folder)
+        shutil.copyfile(os.path.join(original_temp, bank), os.path.join(song_folder, bank))
+        shutil.copyfile(os.path.join(original_temp, bankmeta), os.path.join(song_folder, bankmeta))
 
-          meta_bank = 'custom' # The file uses a custom instrument set
+        instrument_set = 'custom'
 
-          for item in os.listdir(original_temp):
-            if item.endswith('.zsound'):
-              shutil.copy2(os.path.join(original_temp, item), song_folder)
+        for item in os.listdir(original_temp):
+          if item.endswith(".zsound"):
+            shutil.copyfile(os.path.join(original_temp, item), os.path.join(song_folder, item))
 
-          for key, value in archive.zsounds.items():
-            if key and value:
+        for key, value in archive.zsounds.items():
+          if key and value:
               zsounds[f"{key}.zsound"] = { "temp address": value }
 
-        # Copy the formmask file into the temp folder
-        if base_name in archive.formmasks:
-          formmask_path = os.path.join(original_temp, archive.formmasks[base_name])
-          try:
-            with open(formmask_path, 'r', encoding='utf-8') as f:
-              formmask = yaml.safe_load(f)
-          except Exception as e:
-            raise Exception(f"ERROR: Failed to parse formmask file {formmask_path}: {str(e)}")
+      if base_name in archive.formmasks:
+        formmask_path = os.path.join(original_temp, archive.formmasks[base_name])
+        try:
+          with open(formmask_path, 'r', encoding='utf-8') as f:
+            formmask = yaml.safe_load(f)
+        except Exception as e:
+          raise Exception(e)
 
-        # Copy extra non-processed files
-        for item in os.listdir(original_temp):
-          if item.endswith(('.seq', '.zseq', '.aseq', '.zbank', '.bankmeta', '.zsound', '.formmask')) or item == 'categories.txt':
-            continue
+      copy_unprocessed_files(original_temp, song_folder)
 
-          full_item_path = os.path.join(original_temp, item)
-          if os.path.isfile(full_item_path):
-            shutil.copy2(full_item_path, song_folder)
+      write_metadata(song_folder, base_name, cosmetic_name, instrument_set, song_type, categories, zsounds if zsounds else None, formmask if formmask else None)
 
-        # Write the meta file
-        write_metadata(song_folder, base_name, cosmetic_name, meta_bank, song_type, categories, zsounds if zsounds else None, formmask if formmask else None)
+      if len(archive.sequences) > 1:
+        pack(f'{filename}_{base_name}', song_folder, destination_dir)
+      else:
+        pack(f'{filename}', song_folder, destination_dir)
 
-        temp_archive = MusicArchive(base_folder, song_folder)
+# Convert mmrs files
+def convert_archive(input_file: str, destination_dir: str):
+  filename = os.path.splitext(os.path.basename(input_file))[0]
+  filepath = os.path.abspath(input_file)
 
-        # If there's more than one sequence, ensure each separate file has some identifier of some kind
-        if len(archive.sequences) > 1:
-          temp_archive.pack(f'{filename}_{base_name}', rel_path)
-        else:
-          temp_archive.pack(f'{filename}', rel_path)
+  with tempfile.TemporaryDirectory(prefix='mmrs_convert_') as tempfolder:
+    archive = MusicArchive(tempfolder)
+    original_temp = archive.tempfolder
 
-if __name__ == '__main__':
-  def process_file(full_path, base_folder, rel_path) -> None:
-    '''Processes files and logs any errors that occur during the processing'''
-    global spinner_thread
     try:
-      if full_path.endswith('.zseq'):
-        convert_standalone(full_path, base_folder, rel_path)
-      elif full_path.endswith('.mmrs'):
-        convert_archive(full_path, base_folder, rel_path)
+      archive.unpack(filepath)
+
+      cosmetic_name: str = clean_cosmetic_name(filename)
+
+      categories_path: str = os.path.join(original_temp, archive.categories)
+      categories, song_type = parse_categories_and_song_type(categories_path, filename)
+
+      process_archive_sequences(archive, destination_dir, filename, cosmetic_name, categories, song_type, original_temp)
+
     except Exception as e:
-      done_flag.set()
-      spinner_thread.join()
+      raise Exception(e)
 
-      print(f"{RED}Error processing {full_path}:{RESET}")
-      print(f"{YELLOW}{str(e)}{RESET}")
-      logging.error(f"Error processing {full_path}", exc_info=True)
+# Process single file
+def processing_file(input_file: str, base_folder: str, conversion_folder: str) -> None:
+  try:
+    extension = os.path.splitext(input_file)[1]
+    relative_path = os.path.relpath(input_file, base_folder)
+    destination_dir = os.path.dirname(os.path.join(conversion_folder, relative_path))
 
-      spinner_thread = start_spinner("Processing files...")
+    # Create the destination and copy the file to the destination
+    os.makedirs(destination_dir, exist_ok=True)
 
-  # Let the user know the process is ongoing
+    if extension == ".zseq":
+      convert_standalone(input_file, destination_dir)
+
+    elif extension == ".mmrs":
+      convert_archive(input_file, destination_dir)
+
+  except Exception as e:
+    raise Exception(f"processing_file Error: {e}")
+
+# Begin processing files
+
+def process_with_spinner(input_file: str, base_folder: str, conversion_folder: str) -> None:
+  global spinner_thread
+  try:
+    processing_file(input_file, base_folder, conversion_folder)
+  except Exception as e:
+    done_flag.set()
+    spinner_thread.join()
+    print(f"{RED}Error processing {input_file}:{RESET}")
+    print(f"{YELLOW}{str(e)}{RESET}")
+    logging.error(f"Error processing {input_file}", exc_info=True)
+    spinner_thread = start_spinner("Processing file...")
+
+def process_files(base_folder: str, conversion_folder: str, files: list[str]):
+  os.makedirs(conversion_folder, exist_ok=True)
+
+  with ThreadPoolExecutor() as executor:
+    for input_file in files:
+      executor.submit(process_with_spinner, input_file, base_folder, conversion_folder)
+
+def convert_music_files() -> None:
+  global spinner_thread
+
   spinner_thread = start_spinner("Processing files...")
 
   try:
     for file in FILES:
-      # If the path is a directory, get all files and then process them copying directories
+      file = os.path.abspath(file)
+
       if os.path.isdir(file):
-        # DEBUG: Print out which directory is being processed
-        # print(f"{CYAN}Processing directory:{RESET} {file}")
         base_folder = os.path.abspath(file)
-        file_list = get_files_from_directory(base_folder)
+        conversion_folder: str = os.path.join(base_folder, 'converted')
 
-        for full_path, rel_path in file_list:
-          # DEBUG: Print out which file in the subdir is being processed
-          # print(f"{GRAY_248}  └─ {rel_path}{RESET}")
-          process_file(full_path, base_folder, rel_path)
+        files_to_process = [
+          os.path.join(root, file)
+          for root, _, files in os.walk(base_folder)
+          for file in files
+        ]
 
-      # If the path is a file, process the file directly
-      else:
-        # DEBUG: Print out the which file is being processed
-        # print(f"{CYAN}Processing file:{RESET} {file}")
+        process_files(base_folder, conversion_folder, files_to_process)
+
+      elif os.path.isfile(file):
         base_folder = os.path.dirname(os.path.abspath(file))
-        rel_path = os.path.basename(file)
-        full_path = os.path.abspath(file)
+        conversion_folder: str = os.path.join(base_folder, 'converted')
+        process_files(base_folder, conversion_folder, [file])
 
-        process_file(full_path, base_folder, rel_path)
-
-  # Let the user know the process is over
   finally:
     done_flag.set()
     spinner_thread.join()
-
     sys.stdout.write(f"{PL}{CL}{GREEN_79}✓{RESET} {GRAY_245}All files processed.{RESET}\n")
     sys.stdout.flush()
 
-  os.system('pause') # Pause so errors and indication the process is complete are not lost
+if __name__ == '__main__':
+  convert_music_files()
+  os.system('pause')
