@@ -93,6 +93,9 @@ def remove_diacritics(text: str) -> str:
 
   return without_diacritics
 
+class SkipFileException(Exception):
+  pass
+
 class StandaloneSequence:
   def __init__(self, filename, tempfolder) -> None:
     self.filename, self.instrument_set, self.categories = self.parse_zseq_filename(filename)
@@ -125,6 +128,9 @@ class MusicArchive:
       os.rmdir(self.tempfolder)
 
     with zipfile.ZipFile(filepath, 'r') as zip_archive:
+      for f in zip_archive.namelist():
+        if f.endswith(".metadata"):
+          raise SkipFileException("Archive contains .metadata, skipping.")
       zip_archive.extractall(self.tempfolder)
 
     sample_counter: int = 1
@@ -212,14 +218,14 @@ def represent_hexint(dumper, data):
 yaml.add_representer(FlowStyleList, represent_flow_style_list)
 yaml.add_representer(HexInt, represent_hexint)
 
-def write_metadata(folder: str, base_name: str, cosmetic_name: str, meta_bank, song_type: str, categories, zsounds: dict[str, dict[str, int]] = None, formmask: list[str] = None):
+def write_metadata(folder: str, base_name: str, cosmetic_name: str, instrument_set, song_type: str, categories, zsounds: dict[str, dict[str, int]] = None, formmask: list[str] = None):
   metadata_file_path = f"{folder}/{base_name}.metadata"
 
   yaml_dict : dict = {
     "game": "mm",
     "metadata": {
       "display name": cosmetic_name,
-      "instrument set": HexInt(meta_bank) if isinstance(meta_bank, int) else meta_bank,
+      "instrument set": HexInt(instrument_set) if isinstance(instrument_set, int) else instrument_set,
       "song type": song_type,
       "music groups": FlowStyleList([HexInt(cat) for cat in categories]),
     }
@@ -407,6 +413,8 @@ def convert_archive(input_file: str, destination_dir: str):
 
       process_archive_sequences(archive, destination_dir, filename, cosmetic_name, categories, song_type, original_temp)
 
+    except SkipFileException:
+      return
     except Exception as e:
       raise Exception(e)
 
