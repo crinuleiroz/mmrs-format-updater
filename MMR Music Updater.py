@@ -12,6 +12,14 @@ import unicodedata
 from collections import defaultdict
 from typing import Final
 
+# If the MusicGroups module is available, use it, otherwise default
+try:
+  from MusicGroups.CategoryEnum import Category
+  USE_CATEGORY_ENUM = True
+except ImportError:
+  Category = None
+  USE_CATEGORY_ENUM = False
+
 FILES = sys.argv[1:]
 
 # ANSI Terminal Color Codes
@@ -96,6 +104,7 @@ def start_spinner(message: str):
 
 # HANDLE ERROR LOGGING
 import logging
+
 logger = logging.getLogger('mmr_music_updater')
 logger.setLevel(logging.ERROR)
 logger.propagate = False
@@ -252,7 +261,11 @@ def write_metadata(folder: str, base_name: str, cosmetic_name: str, instrument_s
       "display name": cosmetic_name,
       "instrument set": HexInt(instrument_set) if isinstance(instrument_set, int) else instrument_set,
       "song type": song_type,
-      "music groups": FlowStyleList([HexInt(cat) for cat in categories]),
+      "music groups": FlowStyleList([
+        cat.name if USE_CATEGORY_ENUM and isinstance(cat, Category)
+        else HexInt(cat)
+        for cat in categories
+      ]),
     }
   }
 
@@ -280,11 +293,20 @@ def write_metadata(folder: str, base_name: str, cosmetic_name: str, instrument_s
 def clean_cosmetic_name(filename: str) -> str:
   return re.sub(r'\s+', ' ', re.sub(r'(^|\W)(songforce|songtest)(?=\W|$)', '', filename, flags=re.IGNORECASE)).strip() or "???"
 
-def parse_categories(raw_categories: list[str]) -> list[int]:
-  return [int(c.strip(), 16) for c in raw_categories]
+def parse_categories(raw_categories: list[str]) -> list:
+  categories = []
+  for cat_str in raw_categories:
+    cat_value = int(cat_str.strip(), 16)
+
+    cat = Category(cat_value) if USE_CATEGORY_ENUM else cat_value
+    categories.append(cat)
+
+  return categories
 
 def get_song_type(categories, filename: str) -> str:
-  ff_or_bgm = [category in FANFARE_CATEGORIES for category in categories]
+  category_values = [c.value if isinstance(c, Category) else c for c in categories]
+
+  ff_or_bgm = [v in FANFARE_CATEGORIES for v in category_values]
 
   if all(ff_or_bgm):
     return 'fanfare'
@@ -293,7 +315,7 @@ def get_song_type(categories, filename: str) -> str:
   else:
     return 'bgm'
 
-def parse_categories_and_song_type(category_filepath: str, filename: str) -> tuple[list[int], str]:
+def parse_categories_and_song_type(category_filepath: str, filename: str) -> tuple[list, str]:
   with open(category_filepath, 'r') as f:
     raw_categories = f.readline().strip()
 
@@ -302,9 +324,18 @@ def parse_categories_and_song_type(category_filepath: str, filename: str) -> tup
   else:
     parts = raw_categories.split(',')
 
+  categories = []
   try:
-    categories = [int(p.strip(), 16) for p in parts if p.strip()]
-  except Exception as e:
+    for part in parts:
+      part = part.strip()
+      if not part:
+        continue
+
+      cat_value = int(part, 16)
+      cat = Category(cat_value) if USE_CATEGORY_ENUM else cat_value
+      categories.append(cat)
+
+  except Exception:
     raise Exception(f'ERROR: Error processing categories file: {filename}.mmrs! Categories cannot be separated!')
 
   song_type = get_song_type(categories, filename)
@@ -364,7 +395,7 @@ def convert_standalone(input_file: str, destination_dir: str) -> None:
         raise Exception(e)
 
       categories = parse_categories(standalone_seq.categories)
-      song_type = get_song_type(categories, filename)
+      song_type  = get_song_type(categories, filename)
 
       # Write the metadata and pack the file
       write_metadata(standalone_seq.tempfolder, standalone_seq.filename, cosmetic_name, instrument_set, song_type, categories)
@@ -472,6 +503,7 @@ def process_with_spinner(input_file: str, base_folder: str, conversion_folder: s
     spinner_thread.join()
     print(f"{RED}Error processing {input_file}:{RESET}")
     print(f"{YELLOW}{str(e)}{RESET}")
+    print()
     log_error(f"Error processing {input_file}", exc_info=True)
     spinner_thread = start_spinner("Processing file...")
 
