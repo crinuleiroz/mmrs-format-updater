@@ -10,6 +10,9 @@ This script requires the PyYAML module:
 pip install pyyaml
 ```
 
+> [!IMPORTANT]
+> If you want to use string-based music groups, place the `📁/MusicGroups` folder in the same location as the script. If the main script can't find the `CategoryEnum.py` script, it will default to regular hex-style integer categories.
+
 ## 🔧 How To Use
 To use this script, follow the steps below:
 
