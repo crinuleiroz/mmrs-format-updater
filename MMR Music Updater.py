@@ -12,6 +12,7 @@ import unicodedata
 from collections import defaultdict
 from typing import Final
 
+# If the MusicGroups module is available, use it, otherwise default
 try:
   from MusicGroups.CategoryEnum import Category
   USE_CATEGORY_ENUM = True
