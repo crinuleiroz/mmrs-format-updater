@@ -1,22 +1,16 @@
+# Set to True to use spinner, false to show full file logs
+USE_SPINNER = True
+
+# Begin script
 import os, sys, time
 import re
 import tempfile
 import shutil
 import zipfile
-import unicodedata
-import threading, itertools
-from concurrent.futures import ThreadPoolExecutor
 import yaml
-
+import unicodedata
+from collections import defaultdict
 from typing import Final
-
-import logging
-
-logging.basicConfig(
-    filename='mmr-music-updater_errors.log',
-    level=logging.ERROR,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 
 FILES = sys.argv[1:]
 
@@ -51,9 +45,6 @@ SPINNER_FRAMES : Final[list[str]] = [
   "⠀⢘", "⠀⡘", "⠀⠨", "⠀⢐", "⠀⡐", "⠀⠠", "⠀⢀", "⠀⡀",
 ]
 
-done_flag = threading.Event()
-spinner_thread = threading.Thread()
-
 SEQ_EXTS : Final[tuple[str]] = (
   '.seq',
   '.aseq',
@@ -70,6 +61,13 @@ FANFARE_CATEGORIES : Final[list[int]] = [
   0x17E,
 ]
 
+# HANDLE THREADING
+import threading, itertools
+from concurrent.futures import ThreadPoolExecutor
+
+done_flag = threading.Event()
+spinner_thread = threading.Thread()
+
 def spinner_task(message: str, done_flag: threading.Event) -> None:
     for frame in itertools.cycle(SPINNER_FRAMES):
         if done_flag.is_set():
@@ -77,14 +75,40 @@ def spinner_task(message: str, done_flag: threading.Event) -> None:
         sys.stderr.write(f"{PL}{CL}{PINK_204}{frame}{RESET} {GRAY_245}{message}{RESET}\n")
         sys.stderr.flush()
         time.sleep(0.07)
-    sys.stderr.write(f"{PL}{CL}{GREEN_79}✓{RESET} {GRAY_245}{message}{RESET}\n")
+    if USE_SPINNER:
+      sys.stderr.write(f"{PL}{CL}{GREEN_79}✓{RESET} {GRAY_245}{message}{RESET}\n")
+    else:
+      sys.stderr.write(f"{GREEN_79}✓{RESET} {GRAY_245}{message}{RESET}\n")
     sys.stderr.flush()
 
 def start_spinner(message: str):
+    if not USE_SPINNER:
+        print(f"{GRAY_245}{message}{RESET}")
+
+        class DummyThread:
+          def join(self): pass
+        return DummyThread()
+
     done_flag.clear()
     thread = threading.Thread(target=spinner_task, args=(message, done_flag))
     thread.start()
     return thread
+
+# HANDLE ERROR LOGGING
+import logging
+logger = logging.getLogger('mmr_music_updater')
+logger.setLevel(logging.ERROR)
+logger.propagate = False
+_log_handler = None
+
+def log_error(message: str, exc_info = True):
+  global _log_handler
+  if _log_handler is None:
+    _log_handler = logging.FileHandler('mmr-music-updater_errors.log', mode='a', encoding='utf-8')
+    _log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(_log_handler)
+
+  logger.error(message, exc_info=exc_info)
 
 def remove_diacritics(text: str) -> str:
   '''Normalizes filenames to prevent errors caused by diacritics'''
@@ -93,6 +117,7 @@ def remove_diacritics(text: str) -> str:
 
   return without_diacritics
 
+# HANDLE MUSIC FILE CLASSES
 class SkipFileException(Exception):
   pass
 
@@ -438,8 +463,7 @@ def processing_file(input_file: str, base_folder: str, conversion_folder: str) -
     raise Exception(f"processing_file Error: {e}")
 
 # Begin processing files
-
-def process_with_spinner(input_file: str, base_folder: str, conversion_folder: str) -> None:
+def process_with_spinner(input_file: str, base_folder: str, conversion_folder: str, show_file_log: bool = False) -> None:
   global spinner_thread
   try:
     processing_file(input_file, base_folder, conversion_folder)
@@ -448,15 +472,27 @@ def process_with_spinner(input_file: str, base_folder: str, conversion_folder: s
     spinner_thread.join()
     print(f"{RED}Error processing {input_file}:{RESET}")
     print(f"{YELLOW}{str(e)}{RESET}")
-    logging.error(f"Error processing {input_file}", exc_info=True)
+    log_error(f"Error processing {input_file}", exc_info=True)
     spinner_thread = start_spinner("Processing file...")
 
-def process_files(base_folder: str, conversion_folder: str, files: list[str]):
+def process_files(base_folder: str, conversion_folder: str, files: list[str], show_file_log: bool = False):
   os.makedirs(conversion_folder, exist_ok=True)
 
+  files_by_dir = defaultdict(list)
+  for input_file in files:
+    rel_path = os.path.relpath(input_file, base_folder)
+    dir_path = os.path.dirname(rel_path)
+    files_by_dir[dir_path].append((input_file, os.path.basename(rel_path)))
+
   with ThreadPoolExecutor() as executor:
-    for input_file in files:
-      executor.submit(process_with_spinner, input_file, base_folder, conversion_folder)
+    for dir_path, file_entries in sorted(files_by_dir.items()):
+      if not USE_SPINNER and show_file_log:
+        print(f"{CYAN}Processing Directory:{RESET} {os.path.join(os.path.basename(base_folder), dir_path)}")
+        for _, filename in sorted(file_entries, key=lambda x: x[1]):
+          print(f"{GRAY_248}  └─ Processing file:{RESET} {filename}")
+
+      for input_file, _, in file_entries:
+        executor.submit(process_with_spinner, input_file, base_folder, conversion_folder, show_file_log)
 
 def convert_music_files() -> None:
   global spinner_thread
@@ -465,29 +501,40 @@ def convert_music_files() -> None:
 
   try:
     for file in FILES:
-      file = os.path.abspath(file)
+      filepath = os.path.abspath(file)
 
       if os.path.isdir(file):
-        base_folder = os.path.abspath(file)
-        conversion_folder: str = os.path.join(base_folder, 'converted')
+        base_folder = filepath
+        parent_folder = os.path.dirname(base_folder)
+        conversion_folder: str = os.path.join(parent_folder, f'{os.path.basename(base_folder)}_converted')
 
         files_to_process = [
-          os.path.join(root, file)
+          os.path.join(root, name)
           for root, _, files in os.walk(base_folder)
-          for file in files
+          for name in files
         ]
 
-        process_files(base_folder, conversion_folder, files_to_process)
+        if not USE_SPINNER:
+          print(f"{CYAN}Processing directory:{RESET} {os.path.basename(base_folder)}")
+
+        process_files(base_folder, conversion_folder, files_to_process, True)
 
       elif os.path.isfile(file):
-        base_folder = os.path.dirname(os.path.abspath(file))
-        conversion_folder: str = os.path.join(base_folder, 'converted')
+        base_folder = os.path.dirname(filepath)
+        conversion_folder: str = os.path.join(base_folder, 'converted_files')
+
+        if not USE_SPINNER:
+          print(f"{CYAN}Processing File:{RESET} {os.path.basename(file)}")
+
         process_files(base_folder, conversion_folder, [file])
 
   finally:
     done_flag.set()
     spinner_thread.join()
-    sys.stdout.write(f"{PL}{CL}{GREEN_79}✓{RESET} {GRAY_245}All files processed.{RESET}\n")
+    if USE_SPINNER:
+      sys.stdout.write(f"{PL}{CL}{GREEN_79}✓{RESET} {GRAY_245}All files processed.{RESET}\n")
+    else:
+      sys.stderr.write(f"{GREEN_79}✓{RESET} {GRAY_245}All files processed.{RESET}\n")
     sys.stdout.flush()
 
 if __name__ == '__main__':
