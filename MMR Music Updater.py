@@ -12,7 +12,6 @@ import unicodedata
 from collections import defaultdict
 from typing import Final
 
-# If the MusicGroups module is available, use it, otherwise default
 try:
   from MusicGroups.CategoryEnum import Category
   USE_CATEGORY_ENUM = True
@@ -304,7 +303,7 @@ def parse_categories(raw_categories: list[str]) -> list:
   return categories
 
 def get_song_type(categories, filename: str) -> str:
-  category_values = [c.value if isinstance(c, Category) else c for c in categories]
+  category_values = [c.value if USE_CATEGORY_ENUM else c for c in categories]
 
   ff_or_bgm = [v in FANFARE_CATEGORIES for v in category_values]
 
