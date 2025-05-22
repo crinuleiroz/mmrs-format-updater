@@ -128,14 +128,17 @@ def remove_diacritics(text: str) -> str:
 
 # HANDLE MUSIC FILE CLASSES
 class SkipFileException(Exception):
+  ''' Exception to be raised if a file does not require conversion '''
   pass
 
 class StandaloneSequence:
+  ''' Represents a .zseq file storing its metadata '''
   def __init__(self, filename, tempfolder) -> None:
     self.filename, self.instrument_set, self.categories = self.parse_zseq_filename(filename)
     self.tempfolder = tempfolder
 
   def parse_zseq_filename(self, filename) -> tuple[str, int, list[str]]:
+    ''' Extracts the metadata from .zseq file's filename '''
     parts = os.path.splitext(filename)[0].split('_')
 
     if len(parts) != 3:
@@ -144,11 +147,13 @@ class StandaloneSequence:
     return parts[0], int(parts[1], 16), parts[2].split('-')
 
   def copy(self, filepath) -> None:
+    ''' Copies the sequence file into the temp folder and changes its extension '''
     temp_seq_filepath = os.path.join(self.tempfolder, f"{self.filename}.seq")
 
     shutil.copyfile(filepath, temp_seq_filepath)
 
 class MusicArchive:
+  ''' Represents an .mmrs file storing its contents '''
   def __init__(self, tempfolder):
     self.sequences: list[tuple[str, str]] = []
     self.categories: str = None
@@ -158,6 +163,7 @@ class MusicArchive:
     self.tempfolder = tempfolder
 
   def unpack(self, filepath: str) -> None:
+    ''' Unpacks the contents of an .ootrs file into the temporary folder '''
     if os.path.exists(self.tempfolder):
       os.rmdir(self.tempfolder)
 
@@ -200,6 +206,7 @@ class MusicArchive:
       raise FileNotFoundError(f'MusicArchive Error: No categories.txt file found!')
 
   def process_zsounds(self, file: str, sample_counter: int):
+    ''' Extracts custom audio sample metadata from every .zsound file's filename '''
     base_name: str = file.split(".zsound")[0]
     parts: tuple = base_name.split("_")
 
@@ -291,9 +298,11 @@ def write_metadata(folder: str, base_name: str, cosmetic_name: str, instrument_s
       f.write("]\n")
 
 def clean_cosmetic_name(filename: str) -> str:
+  ''' Removes the songforce and songtest tokens for the cosmetic name '''
   return re.sub(r'\s+', ' ', re.sub(r'(^|\W)(songforce|songtest)(?=\W|$)', '', filename, flags=re.IGNORECASE)).strip() or "???"
 
 def parse_categories(raw_categories: list[str]) -> list:
+  ''' Adds the categories from the categories.txt file into a list '''
   categories = []
   for cat_str in raw_categories:
     cat_value = int(cat_str.strip(), 16)
@@ -304,6 +313,7 @@ def parse_categories(raw_categories: list[str]) -> list:
   return categories
 
 def get_song_type(categories, filename: str) -> str:
+  ''' Gets the song type based on the categories in the categories.txt file '''
   category_values = [c.value if USE_CATEGORY_ENUM else c for c in categories]
 
   ff_or_bgm = [v in FANFARE_CATEGORIES for v in category_values]
@@ -316,6 +326,7 @@ def get_song_type(categories, filename: str) -> str:
     return 'bgm'
 
 def parse_categories_and_song_type(category_filepath: str, filename: str) -> tuple[list, str]:
+  ''' Parses the categories file and gets the song type for an .mmrs file '''
   with open(category_filepath, 'r') as f:
     raw_categories = f.readline().strip()
 
@@ -343,6 +354,7 @@ def parse_categories_and_song_type(category_filepath: str, filename: str) -> tup
   return categories, song_type
 
 def copy_unprocessed_files(source_dir: str, destination_dir: str) -> None:
+  ''' Copies files that are not processed from the sequence file's folder to the temp folder '''
   skip_extensions: list[str] = ['.seq', '.zseq', '.aseq', '.zbank', '.bankmeta', '.zsound', '.formmask']
   skip_categories: str = 'categories.txt'
 
@@ -356,7 +368,7 @@ def copy_unprocessed_files(source_dir: str, destination_dir: str) -> None:
     shutil.copyfile(os.path.join(source_dir, file), os.path.join(destination_dir, file))
 
 def pack(filename: str, tempfolder: str, destination_dir: str) -> None:
-    '''Packs the temp folder into a new mmrs file'''
+    '''Packs the temp folder into a new .mmrs file'''
     archive_base = os.path.join(destination_dir, filename)
     zip_path = f"{archive_base}.zip"
     mmrs_path = f"{archive_base}.mmrs"
@@ -370,6 +382,7 @@ def pack(filename: str, tempfolder: str, destination_dir: str) -> None:
 
 # Convert zseq files
 def convert_standalone(input_file: str, destination_dir: str) -> None:
+  ''' Converts a .zseq file into the YAML metadata .mmrs format '''
   filename = os.path.splitext(os.path.basename(input_file))[0]
   filepath = os.path.abspath(input_file)
 
@@ -406,6 +419,7 @@ def convert_standalone(input_file: str, destination_dir: str) -> None:
 
 # Handling for multiple sequences in an archive
 def process_archive_sequences(archive: MusicArchive, destination_dir: str, filename: str, cosmetic_name: str, categories: list, song_type: str, original_temp: str):
+  ''' Processes each sequence in an .mmrs file due to the old format allowing multiple '''
   zsounds: dict[str, int] = {}
   formmask = None
 
@@ -452,6 +466,7 @@ def process_archive_sequences(archive: MusicArchive, destination_dir: str, filen
 
 # Convert mmrs files
 def convert_archive(input_file: str, destination_dir: str):
+  ''' Converts an .mmrs file into the YAML metadata .mmrs format '''
   filename = os.path.splitext(os.path.basename(input_file))[0]
   filepath = os.path.abspath(input_file)
 
@@ -476,6 +491,7 @@ def convert_archive(input_file: str, destination_dir: str):
 
 # Process single file
 def processing_file(input_file: str, base_folder: str, conversion_folder: str) -> None:
+  ''' Processes a single file '''
   try:
     extension = os.path.splitext(input_file)[1]
     relative_path = os.path.relpath(input_file, base_folder)
@@ -499,17 +515,21 @@ def process_with_spinner(input_file: str, base_folder: str, conversion_folder: s
   try:
     processing_file(input_file, base_folder, conversion_folder)
   except Exception as e:
+    # Stop processing and log exceptions
     done_flag.set()
     spinner_thread.join()
     print(f"{RED}Error processing {input_file}:{RESET}")
     print(f"{YELLOW}{str(e)}{RESET}")
     print()
     log_error(f"Error processing {input_file}", exc_info=True)
+    # Restart processing
     spinner_thread = start_spinner("Processing file...")
 
 def process_files(base_folder: str, conversion_folder: str, files: list[str], show_file_log: bool = False):
+  ''' Processes files with the spinner '''
   os.makedirs(conversion_folder, exist_ok=True)
 
+  # Store each file and its relative path
   files_by_dir = defaultdict(list)
   for input_file in files:
     rel_path = os.path.relpath(input_file, base_folder)
@@ -517,6 +537,7 @@ def process_files(base_folder: str, conversion_folder: str, files: list[str], sh
     files_by_dir[dir_path].append((input_file, os.path.basename(rel_path)))
 
   with ThreadPoolExecutor() as executor:
+    # Process files by directory
     for dir_path, file_entries in sorted(files_by_dir.items()):
       if not USE_SPINNER and show_file_log:
         print(f"{CYAN}Processing Directory:{RESET} {os.path.join(os.path.basename(base_folder), dir_path)}")
@@ -527,6 +548,7 @@ def process_files(base_folder: str, conversion_folder: str, files: list[str], sh
         executor.submit(process_with_spinner, input_file, base_folder, conversion_folder, show_file_log)
 
 def convert_music_files() -> None:
+  ''' Main function to process files and convert them from the old format to the new format '''
   global spinner_thread
 
   spinner_thread = start_spinner("Processing files...")
@@ -535,11 +557,13 @@ def convert_music_files() -> None:
     for file in FILES:
       filepath = os.path.abspath(file)
 
+      # If the file is a directory, process the directory and all subdirectories
       if os.path.isdir(file):
         base_folder = filepath
         parent_folder = os.path.dirname(base_folder)
         conversion_folder: str = os.path.join(parent_folder, f'{os.path.basename(base_folder)}_converted')
 
+        # Build the list of files in the directory and each subdirectory
         files_to_process = [
           os.path.join(root, name)
           for root, _, files in os.walk(base_folder)
@@ -551,6 +575,7 @@ def convert_music_files() -> None:
 
         process_files(base_folder, conversion_folder, files_to_process, True)
 
+      # If the file is a single file, process just the single file
       elif os.path.isfile(file):
         base_folder = os.path.dirname(filepath)
         conversion_folder: str = os.path.join(base_folder, 'converted_files')
