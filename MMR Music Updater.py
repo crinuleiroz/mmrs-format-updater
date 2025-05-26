@@ -279,8 +279,9 @@ def write_metadata(folder: str, base_name: str, cosmetic_name: str, instrument_s
       ]),
     }
   }
-
-  yaml_dict["metadata"]["audio samples"] = zsounds
+  
+  if zsounds:
+    yaml_dict["metadata"]["audio samples"] = zsounds
 
   with open(metadata_file_path, "w", encoding="utf-8") as f:
     yaml.dump(yaml_dict, f, sort_keys=False, allow_unicode=True)
