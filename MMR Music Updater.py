@@ -14,11 +14,15 @@ from typing import Final
 
 # If the MusicGroups module is available, use it, otherwise default
 try:
-  from MusicGroups.CategoryEnum import Category
+  from utils.MusicGroups import Category
   USE_CATEGORY_ENUM = True
+
+  from utils.Audiobank import *
+  USE_NEW_LINKING = True
 except ImportError:
   Category = None
   USE_CATEGORY_ENUM = False
+  USE_NEW_LINKING = False
 
 FILES = sys.argv[1:]
 
@@ -276,8 +280,7 @@ def write_metadata(folder: str, base_name: str, cosmetic_name: str, instrument_s
     }
   }
 
-  if zsounds:
-    yaml_dict["metadata"]["audio samples"] = zsounds
+  yaml_dict["metadata"]["audio samples"] = zsounds
 
   with open(metadata_file_path, "w", encoding="utf-8") as f:
     yaml.dump(yaml_dict, f, sort_keys=False, allow_unicode=True)
@@ -420,7 +423,7 @@ def convert_standalone(input_file: str, destination_dir: str) -> None:
 # Handling for multiple sequences in an archive
 def process_archive_sequences(archive: MusicArchive, destination_dir: str, filename: str, cosmetic_name: str, categories: list, song_type: str, original_temp: str):
   ''' Processes each sequence in an .mmrs file due to the old format allowing multiple '''
-  zsounds: dict[str, int] = {}
+  zsounds: dict = {}
   formmask = None
 
   for base_name, ext in archive.sequences:
@@ -443,8 +446,34 @@ def process_archive_sequences(archive: MusicArchive, destination_dir: str, filen
           if item.endswith(".zsound"):
             shutil.copyfile(os.path.join(original_temp, item), os.path.join(song_folder, item))
 
-        for key, value in archive.zsounds.items():
-          if key and value:
+
+        # Get new sample links
+        if USE_NEW_LINKING:
+          with open(os.path.join(original_temp, bankmeta), 'rb') as bmeta:
+            bankmeta_data = bmeta.read()
+
+          with open(os.path.join(original_temp, bank), 'rb') as zbank:
+            zbank_data = zbank.read()
+
+          audiobank: Audiobank = Audiobank(bankmeta_data, zbank_data)
+
+          for key, value in archive.zsounds.items():
+            if key and value:
+              for sample in audiobank.get_bank_samples():
+                if value == sample.address:
+                  zsounds[key] = {
+                    "instrument type": sample.parent_type,
+                    "list index": sample.parent_index
+                  }
+
+                  if isinstance(sample.parent, Instrument):
+                    zsounds[key]["key region"] = sample.key_region
+
+                  break
+
+        else:
+          for key, value in archive.zsounds.items():
+            if key and value:
               zsounds[f"{key}.zsound"] = { "temp address": value }
 
       if base_name in archive.formmasks:
