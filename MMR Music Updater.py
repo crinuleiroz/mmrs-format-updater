@@ -279,27 +279,47 @@ def write_metadata(folder: str, base_name: str, cosmetic_name: str, instrument_s
       ]),
     }
   }
-  
+
   if zsounds:
     yaml_dict["metadata"]["audio samples"] = zsounds
 
   with open(metadata_file_path, "w", encoding="utf-8") as f:
     yaml.dump(yaml_dict, f, sort_keys=False, allow_unicode=True)
 
+  # if formmask:
+  #   with open(metadata_file_path, 'a', encoding='utf-8') as f:
+  #     f.write("formmask: [\n")
+
+  #     for i, value in enumerate(formmask):
+  #       comment = f"Channel {i}" if i < 16 else "Cumulative States"
+  #       f.write(f'  "{value}"')
+
+  #       if i != len(formmask) - 1:
+  #         f.write(",")
+
+  #       f.write(f" # {comment}\n")
+
+  #     f.write("]\n")
+
   if formmask:
-    with open(metadata_file_path, 'a', encoding='utf-8') as f:
-      f.write("formmask: [\n")
+    formmask_dict = {}
 
-      for i, value in enumerate(formmask):
-        comment = f"Channel {i}" if i < 16 else "Cumulative States"
-        f.write(f'  "{value}"')
+    for i, value in enumerate(formmask):
+      key = f"channel {i}" if i < 16 else "cumulative states"
 
-        if i != len(formmask) - 1:
-          f.write(",")
+      if not value or value.strip() == "":
+        states = []
+      else:
+        states = [s.strip() for s in value.split(",")]
 
-        f.write(f" # {comment}\n")
+      formmask_dict[key] = states
 
-      f.write("]\n")
+    with open(metadata_file_path, "a", encoding="utf-8") as f:
+      f.write(f"formmask:\n")
+
+      for key, values in formmask_dict.items():
+        list_items = ", ".join(f'{v}' for v in values)
+        f.write(f"  {key}: [{list_items}]\n")
 
 def clean_cosmetic_name(filename: str) -> str:
   ''' Removes the songforce and songtest tokens for the cosmetic name '''
