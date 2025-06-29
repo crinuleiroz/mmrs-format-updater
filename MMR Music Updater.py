@@ -469,7 +469,7 @@ def process_archive_sequences(archive: MusicArchive, destination_dir: str, filen
 
 
         # Get new sample links
-        if USE_NEW_LINKING:
+        if USE_NEW_LINKING and bank and bankmeta:
           with open(os.path.join(original_temp, bankmeta), 'rb') as bmeta:
             bankmeta_data = bmeta.read()
 
