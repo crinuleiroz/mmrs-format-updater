@@ -57,7 +57,7 @@ SPINNER_FRAMES : Final[list[str]] = [
   "⠀⢘", "⠀⡘", "⠀⠨", "⠀⢐", "⠀⡐", "⠀⠠", "⠀⢀", "⠀⡀",
 ]
 
-SEQ_EXTS : Final[tuple[str]] = (
+SEQ_EXTS : Final[tuple[str, ...]] = (
   '.seq',
   '.aseq',
   '.zseq',
@@ -166,6 +166,8 @@ class MusicArchive:
     self.zsounds : dict[str, int] = {}
     self.tempfolder = tempfolder
 
+    self.sample_counter: int = 1
+
   def unpack(self, filepath: str) -> None:
     ''' Unpacks the contents of an .ootrs file into the temporary folder '''
     if os.path.exists(self.tempfolder):
@@ -177,39 +179,46 @@ class MusicArchive:
           raise SkipFileException("Archive contains .metadata, skipping.")
       zip_archive.extractall(self.tempfolder)
 
-    sample_counter: int = 1
+    self.sample_counter = 1
     for f in os.listdir(self.tempfolder):
       filename = os.path.basename(f)
-      base_name = os.path.splitext(f)[0]
-      extension = os.path.splitext(f)[1].lower()
+      base_name, extension = os.path.splitext(f)
+      extension = extension.lower()
 
-      if extension in SEQ_EXTS:
-        self.sequences.append((base_name, extension))
-        continue
+      match extension:
+        case _ if extension in SEQ_EXTS:
+          self.sequences.append((base_name, extension))
+          continue
 
-      if extension == ".zbank":
-        bankmeta_path = f'{base_name}.bankmeta'
-        if not os.path.exists(os.path.join(self.tempfolder, bankmeta_path)):
-          raise FileNotFoundError(f"Missing bankmeta for {filepath}!")
-        self.banks[base_name] = (filename, bankmeta_path)
-        continue
+        case '.zbank':
+          bankmeta_path = f'{base_name}.bankmeta'
+          if not os.path.exists(os.path.join(self.tempfolder, bankmeta_path)):
+            raise FileNotFoundError(f'Missing bankmeta for {filepath}!')
+          self.banks[base_name] = (filename, bankmeta_path)
+          continue
 
-      if extension == ".formmask":
-        self.formmasks[base_name] = filename
-        continue
+        case '.formmask':
+          self.formmasks[base_name] = filename
+          continue
 
-      if extension == ".zsound":
-        self.process_zsounds(filename, sample_counter)
+        case '.zsound':
+          self.process_zsounds(filename)
+          continue
 
-      if f == "categories.txt":
-        self.categories = f
+        case _ if f == 'categories.txt':
+          self.categories = f
+          continue
+
+        case _:
+          continue
 
     if not self.sequences:
       raise FileNotFoundError(f'MusicArchive Error: No sequence file found!')
+
     if not self.categories:
       raise FileNotFoundError(f'MusicArchive Error: No categories.txt file found!')
 
-  def process_zsounds(self, file: str, sample_counter: int):
+  def process_zsounds(self, file: str):
     ''' Extracts custom audio sample metadata from every .zsound file's filename '''
     base_name: str = file.split(".zsound")[0]
     parts: tuple = base_name.split("_")
@@ -223,9 +232,9 @@ class MusicArchive:
         temp_address = int(parts[1], 16)
 
       elif len(parts) == 1:
-        sample_name = f"Sample{sample_counter}"
+        sample_name = f"Sample{self.sample_counter}"
         temp_address = int(parts[0], 16)
-        sample_counter += 1
+        self.sample_counter += 1
 
       else:
         raise ValueError(f"process_zsounds Error: An exception occured while processing a zsound file: {file} - wrong format!")
